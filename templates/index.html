@@ -1,382 +1,43 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Clinician Guided Grad-CAM</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grad-CAM for TB Chest X-Rays</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .content { display: flex; flex-direction: column; align-items: center; }
+        .img-container { margin-bottom: 20px; }
+        .img-container img { width: 80%; max-width: 500px; }
+        .result { text-align: center; margin-top: 20px; }
+    </style>
 </head>
 <body>
-  <div class="container my-4">
-    <h1 class="mb-4 text-primary">Clinician Guided Grad-CAM (Human-in-the-Loop Grad-CAM)</h1>
-    <div class="alert alert-secondary" role="alert">
-      <strong>Instructions:</strong><br>
-      1) Upload a chest X-ray (left). The system will generate a Grad-CAM overlay (right).<br>
-      2) Draw one or more “lasso” shapes on the overlay to mark suspicious regions:
-      <ul>
-        <li>Press/hold the mouse, drag around the region, then release.</li>
-        <li>The shape automatically closes & fills on a hidden mask canvas.</li>
-      </ul>
-      3) If you need to remove the most recent shape, click “Undo.” Or click “Reset All” to start over.<br>
-      4) Click <strong>Submit Mask</strong> to finalize and send the combined shapes to the server.
-    </div>
 
-    <form id="uploadForm" class="mb-3">
-      <div class="row g-2 align-items-center">
-        <div class="col-auto">
-          <label for="fileInput" class="col-form-label fw-bold">Select X-ray image:</label>
-        </div>
-        <div class="col-auto">
-          <input type="file" id="fileInput" accept="image/*" required class="form-control">
-        </div>
-        <div class="col-auto">
-          <button type="submit" class="btn btn-primary">Upload</button>
-        </div>
-      </div>
+<div class="content">
+    <h1>Grad-CAM for TB Chest X-Ray</h1>
+
+    <form action="/predict" method="POST" enctype="multipart/form-data">
+        <input type="file" name="file" accept="image/*" required>
+        <button type="submit">Upload Image</button>
     </form>
 
-    <div class="row mb-3">
-      <div class="col-md-6">
-        <h5 class="text-muted">Original X-ray</h5>
-        <img id="uploadedImage" class="img-fluid border" src="" alt="X-ray Preview" style="display: none;">
-      </div>
-      <div class="col-md-6 position-relative">
-        <h5 class="text-muted">Grad-CAM Overlay (multi-lasso)</h5>
-        <img id="gradcamImage" class="img-fluid border" src="" alt="Grad-CAM" style="display: none;">
-        <canvas id="displayCanvas" class="canvas-overlay"></canvas>
-        <canvas id="maskCanvas" style="display: none;"></canvas>
-      </div>
-    </div>
+    {% if original_image %}
+        <div class="img-container">
+            <h2>Original Image</h2>
+            <img src="data:image/jpeg;base64,{{ original_image }}" alt="Original Image">
+        </div>
 
-    <div class="row g-2 mb-3 align-items-center">
-      <div class="col-auto">
-        <button id="undoBtn" class="btn btn-warning" disabled>Undo Last Shape</button>
-      </div>
-      <div class="col-auto">
-        <button id="resetBtn" class="btn btn-danger" disabled>Reset All</button>
-      </div>
-      <div class="col-auto">
-        <label class="fw-bold">Pathology Status:</label>
-        <input type="radio" name="pathology_status" value="present" checked> Present
-        <input type="radio" name="pathology_status" value="absent"> Absent
-      </div>
-      <div class="col-auto">
-        <button id="submitMaskBtn" class="btn btn-success" disabled>Submit Mask</button>
-      </div>
-    </div>
+        <div class="img-container">
+            <h2>Grad-CAM Overlay</h2>
+            <img src="data:image/jpeg;base64,{{ grad_cam_image }}" alt="Grad-CAM Overlay">
+        </div>
 
-    <div id="predictionInfo" class="p-3 bg-light border rounded">
-      <h6 class="fw-bold">Prediction</h6>
-      <p class="mb-1"><strong>Predicted Class:</strong> <span id="predClass">--</span></p>
-      <p class="mb-1"><strong>Confidence:</strong> <span id="predConf">--</span></p>
-    </div>
+        <div class="result">
+            <h3>Probability of Tuberculosis: {{ tb_probability }}%</h3>
+        </div>
+    {% endif %}
+</div>
 
-    <hr>
-
-    <div class="mb-3">
-      <button id="startRefinementBtn" class="btn btn-danger">Refine Grad-CAM Offline</button>
-    </div>
-
-    <div id="refinePanel" class="p-3 border rounded" style="display: none;">
-      <h5>Grad-CAM Offline Refinement Progress</h5>
-      <p id="refineMessage" class="mb-1">--</p>
-      <div class="progress" style="height: 25px;">
-        <div id="refineProgressBar" class="progress-bar" role="progressbar" style="width: 0%;">0%</div>
-      </div>
-    </div>
-  </div>
-
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-  <script>
-    const uploadForm = document.getElementById("uploadForm");
-    const fileInput = document.getElementById("fileInput");
-    const uploadedImage = document.getElementById("uploadedImage");
-    const gradcamImage = document.getElementById("gradcamImage");
-
-    const displayCanvas = document.getElementById("displayCanvas");
-    const displayCtx = displayCanvas.getContext("2d");
-
-    const maskCanvas = document.getElementById("maskCanvas");
-    const maskCtx = maskCanvas.getContext("2d");
-
-    const undoBtn = document.getElementById("undoBtn");
-    const resetBtn = document.getElementById("resetBtn");
-    const submitMaskBtn = document.getElementById("submitMaskBtn");
-
-    const predClassSpan = document.getElementById("predClass");
-    const predConfSpan = document.getElementById("predConf");
-
-    let shapes = [];
-    let currentShape = [];
-    let drawing = false;
-
-    function initCanvases(width, height) {
-      displayCanvas.width = width;
-      displayCanvas.height = height;
-      displayCanvas.style.width = width + "px";
-      displayCanvas.style.height = height + "px";
-      displayCtx.clearRect(0, 0, width, height);
-      displayCtx.lineCap = "round";
-      displayCtx.lineWidth = 2;
-      displayCtx.strokeStyle = "red";
-
-      maskCanvas.width = width;
-      maskCanvas.height = height;
-      maskCtx.fillStyle = "black";
-      maskCtx.fillRect(0, 0, width, height);
-
-      shapes = [];
-      currentShape = [];
-      drawing = false;
-
-      undoBtn.disabled = true;
-      resetBtn.disabled = true;
-      submitMaskBtn.disabled = true;
-    }
-
-    uploadForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      if (!fileInput.files[0]) {
-        alert("No file selected.");
-        return;
-      }
-      const formData = new FormData();
-      formData.append("file", fileInput.files[0]);
-      try {
-        let resp = await fetch("/upload_image", { method: "POST", body: formData });
-        if (!resp.ok) {
-          let txt = await resp.text();
-          alert(`Error uploading: ${resp.status} ${txt}`);
-          return;
-        }
-        let data = await resp.json();
-        console.log("[/upload_image]", data);
-        const reader = new FileReader();
-        reader.onload = (evt) => {
-          uploadedImage.src = evt.target.result;
-          uploadedImage.style.display = "block";
-        };
-        reader.readAsDataURL(fileInput.files[0]);
-        if (data.gradcam) {
-          gradcamImage.src = "data:image/png;base64," + data.gradcam;
-          gradcamImage.style.display = "block";
-        }
-        if (data.pred_class) {
-          predClassSpan.textContent = data.pred_class;
-        }
-        if (data.pred_conf !== undefined) {
-          predConfSpan.textContent = (data.pred_conf * 100).toFixed(1) + "%";
-        }
-        gradcamImage.onload = () => {
-          const rect = gradcamImage.getBoundingClientRect();
-          initCanvases(rect.width, rect.height);
-        };
-      } catch (err) {
-        alert("Exception in /upload_image: " + err.message);
-      }
-    });
-
-    displayCanvas.addEventListener("mousedown", (e) => {
-      drawing = true;
-      currentShape = [];
-      addPoint(e);
-    });
-    displayCanvas.addEventListener("mousemove", (e) => {
-      if (!drawing) return;
-      addPoint(e);
-      redrawDisplay();
-    });
-    displayCanvas.addEventListener("mouseup", () => {
-      if (drawing) {
-        drawing = false;
-        finalizeShape();
-      }
-    });
-    displayCanvas.addEventListener("mouseleave", () => {
-      if (drawing) {
-        drawing = false;
-        finalizeShape();
-      }
-    });
-
-    function addPoint(evt) {
-      const rect = displayCanvas.getBoundingClientRect();
-      const x = evt.clientX - rect.left;
-      const y = evt.clientY - rect.top;
-      currentShape.push({ x, y });
-    }
-
-    function redrawDisplay() {
-      displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
-      shapes.forEach(shape => drawOutline(shape, false));
-      if (currentShape.length > 1) {
-        drawOutline(currentShape, false);
-      }
-    }
-
-    function drawOutline(shapePoints, fill) {
-      displayCtx.beginPath();
-      displayCtx.moveTo(shapePoints[0].x, shapePoints[0].y);
-      for (let i = 1; i < shapePoints.length; i++) {
-        displayCtx.lineTo(shapePoints[i].x, shapePoints[i].y);
-      }
-      if (fill) {
-        displayCtx.closePath();
-        displayCtx.fillStyle = "rgba(255, 0, 0, 0.3)";
-        displayCtx.fill();
-      } else {
-        displayCtx.stroke();
-      }
-    }
-
-    function finalizeShape() {
-      if (currentShape.length < 2) return;
-      shapes.push([...currentShape]);
-      fillShapeOnMask(currentShape);
-      undoBtn.disabled = false;
-      resetBtn.disabled = false;
-      submitMaskBtn.disabled = false;
-      redrawDisplay();
-      currentShape = [];
-    }
-
-    function fillShapeOnMask(shapePoints) {
-      maskCtx.beginPath();
-      maskCtx.fillStyle = "white";
-      maskCtx.moveTo(shapePoints[0].x, shapePoints[0].y);
-      for (let i = 1; i < shapePoints.length; i++) {
-        maskCtx.lineTo(shapePoints[i].x, shapePoints[i].y);
-      }
-      maskCtx.closePath();
-      maskCtx.fill();
-    }
-
-    undoBtn.addEventListener("click", () => {
-      if (shapes.length === 0) return;
-      shapes.pop();
-      rebuildMaskCanvas();
-      redrawDisplay();
-      if (shapes.length === 0) {
-        undoBtn.disabled = true;
-        resetBtn.disabled = true;
-        submitMaskBtn.disabled = true;
-      }
-    });
-
-    function rebuildMaskCanvas() {
-      maskCtx.fillStyle = "black";
-      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
-      shapes.forEach(s => fillShapeOnMask(s));
-    }
-
-    resetBtn.addEventListener("click", () => {
-      shapes = [];
-      currentShape = [];
-      drawing = false;
-      maskCtx.fillStyle = "black";
-      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
-      displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
-      undoBtn.disabled = true;
-      resetBtn.disabled = true;
-      submitMaskBtn.disabled = true;
-    });
-
-    submitMaskBtn.addEventListener("click", async () => {
-      if (shapes.length === 0) {
-        alert("No shapes drawn to submit.");
-        return;
-      }
-      const maskDataURL = maskCanvas.toDataURL("image/png");
-      const base64Mask = maskDataURL.split(",")[1];
-      const rads = document.getElementsByName("pathology_status");
-      let pathologyPresent = true;
-      for (let r of rads) {
-        if (r.checked && r.value === "absent") {
-          pathologyPresent = false;
-        }
-      }
-      try {
-        let resp = await fetch("/submit_mask", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mask: base64Mask,
-            pathology_present: pathologyPresent
-          })
-        });
-        if (!resp.ok) {
-          let txt = await resp.text();
-          alert(`Error /submit_mask: ${resp.status} ${txt}`);
-          return;
-        }
-        let data = await resp.json();
-        console.log("[/submit_mask] success:", data);
-        if (data.updated_gradcam) {
-          gradcamImage.src = "data:image/png;base64," + data.updated_gradcam;
-        }
-        if (data.pred_class) {
-          predClassSpan.textContent = data.pred_class;
-        }
-        if (data.pred_conf !== undefined) {
-          predConfSpan.textContent = (data.pred_conf * 100).toFixed(1) + "%";
-        }
-      } catch (err) {
-        alert("Exception in /submit_mask: " + err.message);
-      }
-    });
-
-    const startRefinementBtn = document.getElementById("startRefinementBtn");
-    const refinePanel = document.getElementById("refinePanel");
-    const refineMessage = document.getElementById("refineMessage");
-    const refineProgressBar = document.getElementById("refineProgressBar");
-
-    let refinePollInterval = null;
-
-    startRefinementBtn.addEventListener("click", async () => {
-      if (!confirm("Are you sure you want to start offline Grad-CAM refinement?")) {
-        return;
-      }
-      try {
-        let resp = await fetch("/start_training", { method: "POST" });
-        if (!resp.ok) {
-          let txt = await resp.text();
-          alert("Error starting offline refinement: " + txt);
-          return;
-        }
-        let data = await resp.json();
-        alert(data.message || "Offline Grad-CAM refinement started!");
-        refinePanel.style.display = "block";
-        if (!refinePollInterval) {
-          refinePollInterval = setInterval(pollRefinementStatus, 2000);
-        }
-      } catch (err) {
-        alert("Exception in startRefinement: " + err.message);
-      }
-    });
-
-    async function pollRefinementStatus() {
-      try {
-        let resp = await fetch("/training_status");
-        if (!resp.ok) {
-          console.error("Failed to get training status:", resp.status);
-          return;
-        }
-        let status = await resp.json();
-        refineMessage.textContent = status.message || "--";
-        let epoch = status.epoch || 0;
-        let total = status.total_epochs || 0;
-        let percent = total > 0 ? Math.floor((epoch / total) * 100) : 0;
-        refineProgressBar.style.width = percent + "%";
-        refineProgressBar.textContent = percent + "%";
-        if (!status.running) {
-          clearInterval(refinePollInterval);
-          refinePollInterval = null;
-          console.log("Refinement is done => stopped polling.");
-        }
-      } catch (err) {
-        console.error("Error in pollRefinementStatus:", err);
-      }
-    }
-  </script>
 </body>
 </html>
