@@ -2,42 +2,106 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Grad-CAM for TB Chest X-Rays</title>
+    <title>TB Chest X-Ray Diagnosis with Attention & Grad-CAM</title>
     <style>
-        body { font-family: Arial, sans-serif; padding: 20px; }
-        .content { display: flex; flex-direction: column; align-items: center; }
-        .img-container { margin-bottom: 20px; }
-        .img-container img { width: 80%; max-width: 500px; }
-        .result { text-align: center; margin-top: 20px; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f7f7f7;
+        }
+
+        h1, h2, h3 {
+            text-align: center;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            padding: 20px;
+            border-radius: 6px;
+        }
+
+        .form-section, .result-section {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .image-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+
+        .image-section img {
+            max-width: 90%;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+
+        .probability {
+            font-size: 1.2em;
+            margin-top: 15px;
+            color: #444;
+        }
+
+        button {
+            padding: 8px 16px;
+            font-size: 1rem;
+            cursor: pointer;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        button:hover {
+            background-color: #f0f0f0;
+        }
     </style>
 </head>
 <body>
+<div class="container">
+    <h1>TB Chest X-Ray Diagnosis</h1>
 
-<div class="content">
-    <h1>Grad-CAM for TB Chest X-Ray</h1>
-
-    <form action="/predict" method="POST" enctype="multipart/form-data">
-        <input type="file" name="file" accept="image/*" required>
-        <button type="submit">Upload Image</button>
-    </form>
+    <div class="form-section">
+        <form action="/predict" method="POST" enctype="multipart/form-data">
+            <p>Please upload a chest X-ray image (JPEG/PNG):</p>
+            <input type="file" name="file" accept="image/*" required>
+            <br><br>
+            <button type="submit">Upload & Analyze</button>
+        </form>
+    </div>
 
     {% if original_image %}
-        <div class="img-container">
+    <div class="result-section">
+        
+        <div class="image-section">
             <h2>Original Image</h2>
-            <img src="data:image/jpeg;base64,{{ original_image }}" alt="Original Image">
+            <img src="data:image/jpeg;base64,{{ original_image }}" alt="Original X-Ray">
         </div>
 
-        <div class="img-container">
+        {% if grad_cam_image %}
+        <div class="image-section">
             <h2>Grad-CAM Overlay</h2>
             <img src="data:image/jpeg;base64,{{ grad_cam_image }}" alt="Grad-CAM Overlay">
         </div>
+        {% endif %}
 
-        <div class="result">
+        {% if attention_image %}
+        <div class="image-section">
+            <h2>Attention Map Overlay</h2>
+            <img src="data:image/jpeg;base64,{{ attention_image }}" alt="Attention Map Overlay">
+        </div>
+        {% endif %}
+
+        {% if tb_probability %}
+        <div class="probability">
             <h3>Probability of Tuberculosis: {{ tb_probability }}%</h3>
         </div>
+        {% endif %}
+    </div>
     {% endif %}
 </div>
-
 </body>
 </html>
