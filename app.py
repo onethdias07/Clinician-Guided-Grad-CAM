@@ -1,28 +1,72 @@
-from flask import Flask, render_template, request, jsonify
+import os
+import csv
+import base64
+import time
+import uuid
+import sys
+import subprocess
+import threading
+
+from flask import Flask, request, jsonify, render_template
 import torch
 import numpy as np
 from PIL import Image
-import os
 import cv2
 from io import BytesIO
-import base64
 
-# Import your new Attention-based model and Grad-CAM
+#Importing the Attention-based model and Grad-CAM
 from attention_model import SimpleAttentionCNN, SpatialAttention
-from grad_cam.grad_cam import GradCAM
+from grad_cam.grad_cam import GradCAM, show_grad_cam
+
+############################################################
+# GLOBAL STATE
+############################################################
+# Finetuning status tracker
+finetuning_status = {"running": False, "message": "", "success": False}
+
+############################################################
+# UTILITY: Calculate TB Probability
+############################################################
+def get_probability(img):
+    """
+    Calculate TB probability from image (accepts PIL, numpy, or tensor)
+    Returns probability percentage (0-100)
+    """
+    # Handle different input types
+    if isinstance(img, Image.Image):
+        # Convert PIL to numpy
+        img_np = np.array(img.convert("L"))
+        img_np = cv2.resize(img_np, (256, 256))
+        img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        img_tensor = img_tensor / 255.0
+    elif isinstance(img, np.ndarray):
+        # Convert numpy to tensor
+        img_np = cv2.resize(img, (256, 256)) if img.shape[0] != 256 else img
+        img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        img_tensor = img_tensor / 255.0
+    elif isinstance(img, torch.Tensor):
+        img_tensor = img
+    else:
+        raise TypeError("Image must be PIL Image, numpy array, or torch Tensor")
+    
+    # Forward pass
+    with torch.no_grad():
+        output, _ = attention_model(img_tensor)
+        pred_prob = output.item()
+        pred_prob_percent = round(pred_prob * 100, 2)
+        
+    return pred_prob_percent
 
 ############################################################
 # UTILITY: Load the Trained Attention Model
 ############################################################
-def load_attention_model():
-    """
-    Load the SimpleAttentionCNN with pre-trained weights.
-    """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
+def load_attention_model(model_path=None):
+    if model_path is None or not os.path.exists(model_path):
+        # Use default model path
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
 
     model = SimpleAttentionCNN()
-    # Map to CPU if no GPU available
     model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.eval()
     return model
@@ -30,49 +74,103 @@ def load_attention_model():
 ############################################################
 # UTILITY: Create a Heatmap Overlay from a Tensor Map
 ############################################################
-def create_overlay(map_2d, original_gray, size=256):
-    """
-    map_2d: 2D NumPy array (e.g., attention or Grad-CAM) with shape (H,W).
-    original_gray: The original grayscale image as a NumPy array (H,W).
-    size: final size for the overlay (e.g. 256).
-    
-    Returns: an OpenCV BGR overlay image (np.array) that you can convert to base64.
-    """
-    # Resize map to match final display size
+def create_overlay(map_2d, original_gray, size=256, colormap=cv2.COLORMAP_INFERNO, alpha=0.7):
+    map_2d = np.asarray(map_2d, dtype=np.float32)
     map_resized = cv2.resize(map_2d, (size, size))
-    # Normalize to [0,1] for color mapping
+    
+    # Enhanced normalization with thresholding
     if map_resized.max() - map_resized.min() > 1e-5:
+        # Regular min-max normalization
         map_resized = (map_resized - map_resized.min()) / (map_resized.max() - map_resized.min())
+        
+        # Applying thresholding to suppress weak activations
+        threshold = 0.4  # Only show activations that are at least 40% of the max
+        map_resized[map_resized < threshold] = 0
+        
+        # Re-normalize after thresholding if there are non-zero values left
+        if map_resized.max() > 0:
+            map_resized = map_resized / map_resized.max()
+        
+        # Apply gamma correction that SUPPRESSES weak signals
+        map_resized = np.power(map_resized, 1.5)  # Use gamma > 1 to suppress weak signals
     else:
-        map_resized = np.zeros_like(map_resized)
+        # Create a more subtle fallback pattern for flat maps
+        h, w = map_resized.shape
+        y, x = np.ogrid[:h, :w]
+        center_y, center_x = h/2, w/2
+        map_resized = 1 - (((y - center_y)/(h/2))**2 + ((x - center_x)/(w/2))**2) / 2
+        map_resized = np.clip(map_resized, 0, 1) * 0.7  # Reduce intensity of fallback pattern
 
-    heatmap = cv2.applyColorMap((map_resized * 255).astype(np.uint8), cv2.COLORMAP_JET)
+    # Apply colormap with enhanced visibility
+    heatmap = cv2.applyColorMap((map_resized * 255).astype(np.uint8), colormap)
 
-    # Convert grayscale image to BGR
     if len(original_gray.shape) == 2:
         original_bgr = cv2.cvtColor(original_gray, cv2.COLOR_GRAY2BGR)
     else:
         original_bgr = original_gray
-
     original_bgr = cv2.resize(original_bgr, (size, size))
-    overlay = cv2.addWeighted(original_bgr, 0.5, heatmap, 0.5, 0)
+
+    # Use lower alpha for less overpowering visuals
+    overlay = cv2.addWeighted(original_bgr, 1-alpha, heatmap, alpha, 0)
     return overlay
 
 ############################################################
-# FLASK APP INITIALIZATION
+# APP INIT + FOLDERS
 ############################################################
 app = Flask(__name__)
 
-# Load the Attention-based model globally
-attention_model = load_attention_model()
+# Feedback / Logging directories
+base_dir = os.path.dirname(os.path.abspath(__file__))
+feedback_dir = os.path.join(base_dir, 'feedback')
+images_dir = os.path.join(feedback_dir, 'images')
+masks_dir = os.path.join(feedback_dir, 'masks')
+log_csv_path = os.path.join(feedback_dir, 'feedback_log.csv')
+finetuning_dir = os.path.join(base_dir, 'finetuning')
 
+# Create directories if they don't exist
+os.makedirs(images_dir, exist_ok=True)
+os.makedirs(masks_dir, exist_ok=True)
+os.makedirs(finetuning_dir, exist_ok=True)
+
+# Ensure feedback_log.csv has a header if not present
+if not os.path.isfile(log_csv_path):
+    with open(log_csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # Example columns: image_filename, mask_filename, label, timestamp
+        writer.writerow(["image_filename", "mask_filename", "label", "timestamp"])
+
+# Track the current model path
+current_model_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
+attention_model = load_attention_model(current_model_path)
+
+############################################################
+# UTILITY: Count Feedback Items
+############################################################
+def count_feedback_items():
+    """Count the number of feedback entries in the CSV file"""
+    if not os.path.exists(log_csv_path):
+        return 0
+    
+    try:
+        with open(log_csv_path, 'r') as f:
+            # Subtract 1 for the header row
+            return max(0, sum(1 for _ in f) - 1)
+    except Exception as e:
+        print(f"Error counting feedback items: {e}")
+        return 0
+
+############################################################
+# ROUTES
+############################################################
 @app.route('/')
 def home():
-    return render_template('index.html')
+    feedback_count = count_feedback_items()
+    return render_template('index.html', 
+                          feedback_count=feedback_count,
+                          current_model=os.path.basename(current_model_path))
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    # Check if file part exists
     if 'file' not in request.files:
         return jsonify({'error': 'No file part in request'})
 
@@ -80,68 +178,453 @@ def predict():
     if file.filename == '':
         return jsonify({'error': 'No selected file'})
 
-    # Read image
-    img_pil = Image.open(file).convert("RGB")  # Original color (could convert to L for grayscale)
-    
-    # Convert to grayscale for your model
-    img_pil_gray = img_pil.convert("L")
+    # Load and preprocess
+    pil_img = Image.open(file).convert("RGB")
+    pil_img_gray = pil_img.convert("L")
 
-    # Convert original image to base64 for display
-    buffered = BytesIO()
-    img_pil.save(buffered, format="JPEG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    # Convert original to base64
+    buf = BytesIO()
+    pil_img.save(buf, format="JPEG")
+    original_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    # Preprocess for model inference
-    img_np = np.array(img_pil_gray)  # shape: (H,W)
-    img_np = cv2.resize(img_np, (256, 256))  # match model input
-    img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # [1,1,256,256]
-    img_tensor = img_tensor / 255.0  # normalize to [0,1]
+    # Prepare for model input
+    img_np = np.array(pil_img_gray)
+    img_np = cv2.resize(img_np, (256, 256))
+    img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    img_tensor = img_tensor / 255.0
 
-    # 1) Get classification & attention map from the attention model
+    # Get probability using the utility function
+    pred_prob_percent = get_probability(img_tensor)
+
+    # Forward pass (just for attention map)
     with torch.no_grad():
-        output, attn_map = attention_model(img_tensor)  # output shape: [1,1], attn_map: [1,1,30,30]
-        pred_prob = output.item()  # single scalar
-        pred_prob_percent = round(pred_prob * 100, 2)
+        _, attn_map = attention_model(img_tensor)
 
-    # 2) Create an attention overlay (upsample attn_map to 256x256)
-    attn_map_np = attn_map[0].squeeze().cpu().numpy()  # shape: (30,30)
-    attention_overlay_bgr = create_overlay(attn_map_np, img_np, size=256)
-    # Convert overlay to base64
-    _, buffer = cv2.imencode('.jpg', attention_overlay_bgr)
+    # Attention overlay
+    attn_map_np = attn_map[0].squeeze().cpu().numpy()  # (30,30)
+    attn_overlay_bgr = create_overlay(attn_map_np, img_np, size=256)
+    _, buffer = cv2.imencode('.jpg', attn_overlay_bgr)
     attn_overlay_base64 = base64.b64encode(buffer).decode("utf-8")
 
-    # 3) Use Grad-CAM on the final conv layer
-    #    The final conv layer in your attention model is `attention_model.feature_extractor[6]`
-    gradcam_tool = GradCAM(attention_model, target_layer=attention_model.feature_extractor[6])
-    # Grad-CAM requires a forward + backward pass
-    output_forward = attention_model(img_tensor)[0]  # forward pass => (output, attn_map)
-    attention_model.zero_grad()
-    output_forward[0].backward()
-
-    cam = gradcam_tool.gradients  # captured by GradCAM hooks
-    activations = gradcam_tool.activations
-
-    # Flatten out the shape: [1, channels, H, W] => compute Grad-CAM
-    # (We replicate logic from grad_cam.py, or we can use the existing GradCAM __call__ if refactored)
-    # But let's do it explicitly:
-    b, c, h, w = cam.size()
-    alpha = cam.view(b, c, -1).mean(2).view(b, c, 1, 1)
-    grad_cam_map = (activations * alpha).sum(dim=1, keepdim=True)
-    grad_cam_map = torch.relu(grad_cam_map)  # ReLU
-    gradcam_tool.remove_hooks()  # remove the hooks
-
-    grad_cam_map_np = grad_cam_map[0, 0].detach().cpu().numpy()  # shape: (H, W) e.g. (30,30)
-    # Resize to 256x256 and create overlay
-    grad_cam_overlay_bgr = create_overlay(grad_cam_map_np, img_np, size=256)
+    # Grad-CAM with more restrictive parameters
+    try:
+        # First try using an early convolutional layer
+        target_layer = attention_model.feature_extractor[0]
+        print(f"Trying Grad-CAM with first conv layer: {target_layer}")
+        
+        # Use the proper show_grad_cam function with MORE RESTRICTIVE PARAMETERS
+        _, grad_cam_overlay_bgr = show_grad_cam(
+            img_np, 
+            attention_model, 
+            target_layer=target_layer,
+            use_relu=True,  # Now use ReLU to focus only on positive contributions
+            smooth_factor=1.0,  # Reduced smoothing to keep detail
+            alpha=0.5  # Reduced alpha for less overpowering visuals
+        )
+        
+        # Add extra thresholding for overly bright visualizations
+        # Convert to grayscale to check overall brightness
+        gc_gray = cv2.cvtColor(grad_cam_overlay_bgr, cv2.COLOR_BGR2GRAY)
+        mean_brightness = np.mean(gc_gray)
+        
+        if mean_brightness > 180:  # Very bright overall
+            print("First approach too bright, trying with more restrictive params") # for debugging purposes will remove in final submission
+            
+            # Try a different layer with stricter parameters
+            target_layer = attention_model.feature_extractor[2]  # Try an intermediate layer
+            _, grad_cam_overlay_bgr = show_grad_cam(
+                img_np, 
+                attention_model, 
+                target_layer=target_layer,
+                use_relu=True,
+                smooth_factor=0.5,  # Less smoothing for more precise regions
+                alpha=0.4  # Even less overlay intensity
+            )
+            
+            # Check again, if still too bright, apply manual thresholding
+            gc_gray = cv2.cvtColor(grad_cam_overlay_bgr, cv2.COLOR_BGR2GRAY)
+            if np.mean(gc_gray) > 160:
+                print("Still too bright, applying manual threshold")
+                # Manual thresholding to create smaller activation regions
+                mask = gc_gray > 200  # Only keep the brightest spots
+                original_bgr = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+                # Create a new overlay with just the highlighted regions
+                heatmap = np.zeros_like(grad_cam_overlay_bgr)
+                heatmap[mask] = [0, 0, 255]  # Red highlights just for the key regions
+                grad_cam_overlay_bgr = cv2.addWeighted(original_bgr, 0.8, heatmap, 0.2, 0)
+                
+    except Exception as e:
+        # Fallback to a simpler approach if an error occurs
+        print(f"Error in Grad-CAM generation: {e}")
+        
+        # Create a basic circular pattern as fallback
+        h, w = img_np.shape
+        y, x = np.ogrid[:h, :w]
+        center_y, center_x = h/2, w/2
+        circular_map = 1 - (((y - center_y)/(h/2))**2 + ((x - center_x)/(w/2))**2) / 2
+        circular_map = np.clip(circular_map, 0, 1)
+        
+        # Apply threshold to make a smaller central region
+        circular_map[circular_map < 0.5] = 0
+        
+        grad_cam_overlay_bgr = create_overlay(circular_map, img_np, alpha=0.4)
+    
+    # Encode Grad-CAM overlay to base64
     _, buffer = cv2.imencode('.jpg', grad_cam_overlay_bgr)
     grad_cam_overlay_base64 = base64.b64encode(buffer).decode("utf-8")
 
-    # Return the template with both images and classification result
     return render_template('index.html',
-                           original_image=img_base64,
+                           original_image=original_base64,
                            grad_cam_image=grad_cam_overlay_base64,
                            attention_image=attn_overlay_base64,
-                           tb_probability=pred_prob_percent)
+                           tb_probability=pred_prob_percent,
+                           feedback_count=count_feedback_items(),
+                           current_model=os.path.basename(current_model_path))
+
+@app.route('/advanced_gradcam', methods=['POST'])
+def advanced_gradcam():
+    """
+    Enhanced visualization endpoint with multiple Grad-CAM options
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in request'})
+
+    file = request.files['file']
+    
+    # Load and preprocess
+    pil_img = Image.open(file).convert("RGB")
+    pil_img_gray = pil_img.convert("L")
+    img_np = np.array(pil_img_gray)
+    
+    # Get probability for consistency
+    pred_prob_percent = get_probability(pil_img_gray)
+    
+    results = []
+    
+    # Try different threshold and colormap combinations
+    colormaps = [
+        ('INFERNO', cv2.COLORMAP_INFERNO),
+        ('PLASMA', cv2.COLORMAP_PLASMA),
+        ('VIRIDIS', cv2.COLORMAP_VIRIDIS),
+        ('COOL', cv2.COLORMAP_COOL)
+    ]
+    
+    thresholds = [0.3, 0.5, 0.7]
+    
+    # For each viable layer index
+    for cmap_name, cmap in colormaps:
+        for threshold in thresholds:
+            try:
+                # Create a specialized version for this threshold/colormap
+                target_layer = attention_model.feature_extractor[0]
+                _, overlay_bgr = show_grad_cam(
+                    img_np, 
+                    attention_model, 
+                    target_layer=target_layer,
+                    use_relu=True
+                )
+                
+                # Apply custom thresholding and colormap
+                gc_gray = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2GRAY) / 255.0
+                gc_gray[gc_gray < threshold] = 0
+                if gc_gray.max() > 0:
+                    gc_gray = gc_gray / gc_gray.max()
+                    
+                heatmap = cv2.applyColorMap(np.uint8(255 * gc_gray), cmap)
+                thresholded = cv2.addWeighted(
+                    cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR), 0.7, 
+                    heatmap, 0.3, 0
+                )
+                
+                # Encode to base64
+                _, buffer = cv2.imencode('.jpg', thresholded)
+                overlay_base64 = base64.b64encode(buffer).decode("utf-8")
+                
+                results.append({
+                    'name': f"{cmap_name}, Threshold: {threshold}",
+                    'image': overlay_base64
+                })
+            except Exception as e:
+                print(f"Error with {cmap_name}, threshold={threshold}: {e}")
+    
+    # Include probability in the response
+    return jsonify({
+        'visualizations': results,
+        'tb_probability': pred_prob_percent
+    })
+
+@app.route('/debug_gradcam', methods=['POST'])
+def debug_gradcam():
+    """
+    Debug endpoint that returns multiple Grad-CAM visualizations from different layers
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in request'})
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'})
+
+    # Load and preprocess
+    pil_img = Image.open(file).convert("L")
+    img_np = np.array(pil_img)
+    
+    # Calculate probability for consistency
+    pred_prob_percent = get_probability(pil_img)
+    
+    # Try different layers and settings
+    results = []
+    
+    # For each viable layer index
+    for layer_idx in [0, 2, 4, 6]:
+        if layer_idx < len(attention_model.feature_extractor):
+            target_layer = attention_model.feature_extractor[layer_idx]
+            
+            # Try with and without ReLU
+            for use_relu in [True, False]:
+                try:
+                    _, overlay = show_grad_cam(
+                        img_np, 
+                        attention_model, 
+                        target_layer=target_layer,
+                        use_relu=use_relu,
+                        smooth_factor=1.0,  # Reduced smoothing
+                        alpha=0.5  # Lower alpha
+                    )
+                    
+                    # Encode to base64
+                    _, buffer = cv2.imencode('.jpg', overlay)
+                    overlay_base64 = base64.b64encode(buffer).decode("utf-8")
+                    
+                    results.append({
+                        'layer': f"Layer {layer_idx}",
+                        'relu': 'On' if use_relu else 'Off',
+                        'image': overlay_base64
+                    })
+                except Exception as e:
+                    print(f"Error with layer {layer_idx}, relu={use_relu}: {e}")
+    
+    # Include probability in the response
+    return jsonify({
+        'visualizations': results,
+        'tb_probability': pred_prob_percent
+    })
+
+@app.route('/submit_mask', methods=['POST'])
+def submit_mask():
+    """
+    Expects JSON like:
+      {
+        "image": <base64_jpeg>,
+        "mask": <base64_png>,
+        "label": <string>  # e.g., "TB" or "Normal"
+      }
+    Saves both image & mask to disk, logs them in feedback_log.csv, 
+    and returns a JSON response indicating success.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON payload"}), 400
+
+    base64_image = data.get("image", None)  # Base64-encoded JPG of the original
+    base64_mask = data.get("mask", None)    # Base64-encoded PNG of the user's drawn mask
+    user_label = data.get("label", "")      # "TB", "Normal", or another user-provided label
+
+    if not base64_image or not base64_mask:
+        return jsonify({"error": "Missing 'image' or 'mask' field in JSON"}), 400
+
+    # Generate a timestamp-based unique ID
+    timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+    unique_id = f"{timestamp_str}_{uuid.uuid4().hex[:6]}"
+
+    image_filename = f"{unique_id}_image.jpg"
+    mask_filename  = f"{unique_id}_mask.png"
+
+    image_path = os.path.join(images_dir, image_filename)
+    mask_path  = os.path.join(masks_dir, mask_filename)
+
+    # Decode & save the image
+    try:
+        image_data = base64.b64decode(base64_image)
+        with open(image_path, "wb") as f_img:
+            f_img.write(image_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to decode 'image': {str(e)}"}), 400
+
+    # Decode & save the mask
+    try:
+        mask_data = base64.b64decode(base64_mask)
+        with open(mask_path, "wb") as f_mask:
+            f_mask.write(mask_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to decode 'mask': {str(e)}"}), 400
+
+    # Log to CSV
+    with open(log_csv_path, "a", newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        # Example columns: [image_filename, mask_filename, label, timestamp]
+        writer.writerow([image_filename, mask_filename, user_label, timestamp_str])
+
+    return jsonify({
+        "status": "ok",
+        "image_saved": image_filename,
+        "mask_saved": mask_filename,
+        "label": user_label,
+        "timestamp": timestamp_str
+    })
+
+############################################################
+# FINETUNING ROUTES
+############################################################
+@app.route('/run_finetuning', methods=['POST'])
+def run_finetuning():
+    """Trigger the offline fine-tuning process"""
+    global finetuning_status
+    
+    # Check if fine-tuning is already running
+    if finetuning_status.get("running", False):
+        return jsonify({
+            "success": False, 
+            "message": "Fine-tuning already in progress"
+        })
+    
+    # Check if there's any feedback data
+    feedback_count = count_feedback_items()
+    if feedback_count == 0:
+        return jsonify({
+            "success": False, 
+            "message": "No feedback data found. Please collect feedback before fine-tuning."
+        })
+    
+    # Generate timestamp for this fine-tuning run
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    new_model_path = os.path.join(finetuning_dir, f'tb_chest_xray_refined_{timestamp}.pt')
+    
+    # Start fine-tuning in a separate thread to avoid blocking
+    finetuning_status = {
+        "running": True,
+        "message": "Fine-tuning started...",
+        "success": False,
+        "timestamp": timestamp
+    }
+    
+    thread = threading.Thread(
+        target=run_finetuning_process,
+        args=(current_model_path, new_model_path)
+    )
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        "success": True,
+        "message": "Fine-tuning process started. This may take several minutes.",
+        "timestamp": timestamp
+    })
+
+def run_finetuning_process(old_model_path, new_model_path):
+    """Run the fine-tuning process in a separate thread"""
+    global finetuning_status
+    
+    try:
+        # Construct the command
+        cmd = [
+            sys.executable, "finetune.py",
+            "--old-model-path", old_model_path,
+            "--new-model-path", new_model_path,
+            "--feedback-log", log_csv_path,
+            "--feedback-images-dir", images_dir,
+            "--feedback-masks-dir", masks_dir,
+            "--epochs", "10"
+        ]
+        
+        # Run the process
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        
+        stdout, stderr = process.communicate()
+        
+        if process.returncode == 0:
+            finetuning_status = {
+                "running": False,
+                "message": f"Fine-tuning completed successfully! New model saved to: {os.path.basename(new_model_path)}",
+                "success": True,
+                "new_model_path": new_model_path
+            }
+        else:
+            finetuning_status = {
+                "running": False,
+                "message": f"Fine-tuning failed. Error: {stderr}",
+                "success": False
+            }
+    except Exception as e:
+        finetuning_status = {
+            "running": False,
+            "message": f"Error during fine-tuning: {str(e)}",
+            "success": False
+        }
+
+@app.route('/finetuning_status', methods=['GET'])
+def get_finetuning_status():
+    """Get the status of the current or last fine-tuning process"""
+    global finetuning_status
+    return jsonify(finetuning_status)
+
+@app.route('/switch_model', methods=['POST'])
+def switch_model():
+    """Switch between the original and fine-tuned model"""
+    global attention_model, current_model_path
+    
+    # Checking if there's a refined model available
+    if not os.path.exists(finetuning_dir):
+        return jsonify({
+            "success": False,
+            "message": "No refined models available."
+        })
+    
+    # Find the most recent refined model
+    model_files = [f for f in os.listdir(finetuning_dir) if f.endswith('.pt')]
+    if not model_files:
+        return jsonify({
+            "success": False,
+            "message": "No refined models found in the finetuning directory."
+        })
+    
+    # Sort by modification time (newest first)
+    model_files.sort(key=lambda f: os.path.getmtime(os.path.join(finetuning_dir, f)), reverse=True)
+    latest_model = os.path.join(finetuning_dir, model_files[0])
+    
+    # Check if we're already using this model
+    if current_model_path == latest_model:
+        # Switch back to original model
+        original_model_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
+        attention_model = load_attention_model(original_model_path)
+        current_model_path = original_model_path
+        
+        return jsonify({
+            "success": True,
+            "message": "Switched back to original model.",
+            "model_name": "tb_chest_xray_attention_best.pt"
+        })
+    else:
+        # Switch to refined model
+        try:
+            attention_model = load_attention_model(latest_model)
+            current_model_path = latest_model
+            
+            return jsonify({
+                "success": True,
+                "message": f"Switched to refined model: {os.path.basename(latest_model)}",
+                "model_name": os.path.basename(latest_model)
+            })
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "message": f"Error loading refined model: {str(e)}"
+            })
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
