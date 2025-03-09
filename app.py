@@ -16,7 +16,7 @@ from io import BytesIO
 
 #Importing the Attention-based model and Grad-CAM
 from attention_model import SimpleAttentionCNN, SpatialAttention
-from grad_cam.grad_cam import GradCAM, show_grad_cam
+from grad_cam.grad_cam import GradCAM, show_grad_cam, find_best_target_layer
 
 ############################################################
 # GLOBAL STATE
@@ -206,68 +206,60 @@ def predict():
     _, buffer = cv2.imencode('.jpg', attn_overlay_bgr)
     attn_overlay_base64 = base64.b64encode(buffer).decode("utf-8")
 
-    # Grad-CAM with more restrictive parameters
+    # Generate Grad-CAM - IMPROVED APPROACH
     try:
-        # First try using an early convolutional layer
-        target_layer = attention_model.feature_extractor[0]
-        print(f"Trying Grad-CAM with first conv layer: {target_layer}")
-        
-        # Use the proper show_grad_cam function with MORE RESTRICTIVE PARAMETERS
+        # Try to find the best target layer dynamically based on activation strength
+        try:
+            # This will analyze activation patterns to find the best layer
+            target_layer = find_best_target_layer(attention_model, img_tensor)
+            print(f"Using dynamically selected layer for Grad-CAM")
+        except Exception as e:
+            print(f"Dynamic layer selection failed: {e}")
+            # Fallback to predetermined layers with known good results
+            if pred_prob_percent > 50:  # For TB positive cases
+                # For TB positive, look at middle/earlier layers which often show lesions better
+                target_layer = attention_model.feature_extractor[2]
+                print(f"Using layer 2 for TB positive case")
+            else:
+                # For TB negative, often deeper layers work better to show absence of patterns
+                if len(attention_model.feature_extractor) >= 4:
+                    target_layer = attention_model.feature_extractor[4]
+                    print(f"Using layer 4 for TB negative case")
+                else:
+                    target_layer = attention_model.feature_extractor[0]
+                    print(f"Using layer 0 (fallback) for TB negative case")
+                    
         _, grad_cam_overlay_bgr = show_grad_cam(
             img_np, 
             attention_model, 
             target_layer=target_layer,
-            use_relu=True,  # Now use ReLU to focus only on positive contributions
-            smooth_factor=1.0,  # Reduced smoothing to keep detail
-            alpha=0.5  # Reduced alpha for less overpowering visuals
+            use_relu=True,
+            smooth_factor=0.3,  # Reduced for even sharper results
+            alpha=0.65  # Slightly increased for better visibility
         )
+    except Exception as e:
+        print(f"Error with first Grad-CAM attempt: {e}")
         
-        # Add extra thresholding for overly bright visualizations
-        # Convert to grayscale to check overall brightness
-        gc_gray = cv2.cvtColor(grad_cam_overlay_bgr, cv2.COLOR_BGR2GRAY)
-        mean_brightness = np.mean(gc_gray)
-        
-        if mean_brightness > 180:  # Very bright overall
-            print("First approach too bright, trying with more restrictive params") # for debugging purposes will remove in final submission
+        try:
+            # Second attempt with different parameters and layer
+            # Prefer first conv layer for reliable gradients
+            target_layer = attention_model.feature_extractor[0]
+            print(f"Retrying Grad-CAM with first conv layer")
             
-            # Try a different layer with stricter parameters
-            target_layer = attention_model.feature_extractor[2]  # Try an intermediate layer
             _, grad_cam_overlay_bgr = show_grad_cam(
                 img_np, 
                 attention_model, 
                 target_layer=target_layer,
-                use_relu=True,
-                smooth_factor=0.5,  # Less smoothing for more precise regions
-                alpha=0.4  # Even less overlay intensity
+                use_relu=False,  # Try without ReLU
+                smooth_factor=0.5,
+                alpha=0.7
             )
+        except Exception as e:
+            print(f"Error with second Grad-CAM attempt: {e}")
             
-            # Check again, if still too bright, apply manual thresholding
-            gc_gray = cv2.cvtColor(grad_cam_overlay_bgr, cv2.COLOR_BGR2GRAY)
-            if np.mean(gc_gray) > 160:
-                print("Still too bright, applying manual threshold")
-                # Manual thresholding to create smaller activation regions
-                mask = gc_gray > 200  # Only keep the brightest spots
-                original_bgr = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
-                # Create a new overlay with just the highlighted regions
-                heatmap = np.zeros_like(grad_cam_overlay_bgr)
-                heatmap[mask] = [0, 0, 255]  # Red highlights just for the key regions
-                grad_cam_overlay_bgr = cv2.addWeighted(original_bgr, 0.8, heatmap, 0.2, 0)
-                
-    except Exception as e:
-        # Fallback to a simpler approach if an error occurs
-        print(f"Error in Grad-CAM generation: {e}")
-        
-        # Create a basic circular pattern as fallback
-        h, w = img_np.shape
-        y, x = np.ogrid[:h, :w]
-        center_y, center_x = h/2, w/2
-        circular_map = 1 - (((y - center_y)/(h/2))**2 + ((x - center_x)/(w/2))**2) / 2
-        circular_map = np.clip(circular_map, 0, 1)
-        
-        # Apply threshold to make a smaller central region
-        circular_map[circular_map < 0.5] = 0
-        
-        grad_cam_overlay_bgr = create_overlay(circular_map, img_np, alpha=0.4)
+            # Use attention map as fallback
+            print("Using attention map as fallback for Grad-CAM")
+            grad_cam_overlay_bgr = attn_overlay_bgr
     
     # Encode Grad-CAM overlay to base64
     _, buffer = cv2.imencode('.jpg', grad_cam_overlay_bgr)
@@ -301,51 +293,83 @@ def advanced_gradcam():
     
     results = []
     
-    # Try different threshold and colormap combinations
+    # IMPROVED: Layer-specific results
+    layer_indices = []
+    if len(attention_model.feature_extractor) >= 6:
+        layer_indices = [0, 2, 4]  # Use first, middle and deeper layers
+    elif len(attention_model.feature_extractor) >= 4:
+        layer_indices = [0, 2]
+    else:
+        layer_indices = [0]
+    
+    # Try different layers
+    for layer_idx in layer_indices:
+        target_layer = attention_model.feature_extractor[layer_idx]
+        
+        try:
+            # Generate visualization with improved parameters
+            _, overlay_bgr = show_grad_cam(
+                img_np, 
+                attention_model, 
+                target_layer=target_layer,
+                use_relu=True,
+                smooth_factor=0.3,
+                alpha=0.65
+            )
+            
+            # Encode to base64
+            _, buffer = cv2.imencode('.jpg', overlay_bgr)
+            overlay_base64 = base64.b64encode(buffer).decode("utf-8")
+            
+            results.append({
+                'name': f"Layer {layer_idx}",
+                'image': overlay_base64
+            })
+        except Exception as e:
+            print(f"Error with layer {layer_idx}: {e}")
+    
+    # Try different colormap options on the best layer (usually layer 2)
+    best_layer_idx = 2 if len(attention_model.feature_extractor) >= 4 else 0
+    target_layer = attention_model.feature_extractor[best_layer_idx]
+    
     colormaps = [
+        ('JET', cv2.COLORMAP_JET),
         ('INFERNO', cv2.COLORMAP_INFERNO),
-        ('PLASMA', cv2.COLORMAP_PLASMA),
-        ('VIRIDIS', cv2.COLORMAP_VIRIDIS),
-        ('COOL', cv2.COLORMAP_COOL)
+        ('HOT', cv2.COLORMAP_HOT),
+        ('VIRIDIS', cv2.COLORMAP_VIRIDIS)
     ]
     
-    thresholds = [0.3, 0.5, 0.7]
-    
-    # For each viable layer index
     for cmap_name, cmap in colormaps:
-        for threshold in thresholds:
-            try:
-                # Create a specialized version for this threshold/colormap
-                target_layer = attention_model.feature_extractor[0]
-                _, overlay_bgr = show_grad_cam(
-                    img_np, 
-                    attention_model, 
-                    target_layer=target_layer,
-                    use_relu=True
-                )
-                
-                # Apply custom thresholding and colormap
-                gc_gray = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2GRAY) / 255.0
-                gc_gray[gc_gray < threshold] = 0
-                if gc_gray.max() > 0:
-                    gc_gray = gc_gray / gc_gray.max()
-                    
-                heatmap = cv2.applyColorMap(np.uint8(255 * gc_gray), cmap)
-                thresholded = cv2.addWeighted(
-                    cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR), 0.7, 
-                    heatmap, 0.3, 0
-                )
-                
-                # Encode to base64
-                _, buffer = cv2.imencode('.jpg', thresholded)
-                overlay_base64 = base64.b64encode(buffer).decode("utf-8")
-                
-                results.append({
-                    'name': f"{cmap_name}, Threshold: {threshold}",
-                    'image': overlay_base64
-                })
-            except Exception as e:
-                print(f"Error with {cmap_name}, threshold={threshold}: {e}")
+        try:
+            # Generate base visualization
+            _, overlay_bgr = show_grad_cam(
+                img_np, 
+                attention_model, 
+                target_layer=target_layer,
+                use_relu=True,
+                smooth_factor=0.3
+            )
+            
+            # Extract grayscale heatmap
+            gc_gray = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2GRAY) / 255.0
+            
+            # Apply colormap
+            heatmap = cv2.applyColorMap(np.uint8(255 * gc_gray), cmap)
+            colormap_overlay = cv2.addWeighted(
+                cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR), 0.35, 
+                heatmap, 0.65, 0
+            )
+            
+            # Encode to base64
+            _, buffer = cv2.imencode('.jpg', colormap_overlay)
+            overlay_base64 = base64.b64encode(buffer).decode("utf-8")
+            
+            results.append({
+                'name': f"{cmap_name} Colormap",
+                'image': overlay_base64
+            })
+        except Exception as e:
+            print(f"Error with {cmap_name}: {e}")
     
     # Include probability in the response
     return jsonify({
@@ -375,7 +399,34 @@ def debug_gradcam():
     # Try different layers and settings
     results = []
     
-    # For each viable layer index
+    # Try to find the best layer dynamically
+    img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
+    try:
+        best_layer = find_best_target_layer(attention_model, img_tensor)
+        
+        # Add a special visualization showing the best layer
+        _, overlay = show_grad_cam(
+            img_np,
+            attention_model,
+            target_layer=best_layer,
+            use_relu=True,
+            smooth_factor=0.3,
+            alpha=0.65
+        )
+        
+        # Encode to base64
+        _, buffer = cv2.imencode('.jpg', overlay)
+        overlay_base64 = base64.b64encode(buffer).decode("utf-8")
+        
+        results.append({
+            'layer': "Auto-Selected Best Layer",
+            'relu': 'On',
+            'image': overlay_base64
+        })
+    except Exception as e:
+        print(f"Error finding best layer: {e}")
+    
+    # Also try specific layers
     for layer_idx in [0, 2, 4, 6]:
         if layer_idx < len(attention_model.feature_extractor):
             target_layer = attention_model.feature_extractor[layer_idx]
@@ -388,8 +439,8 @@ def debug_gradcam():
                         attention_model, 
                         target_layer=target_layer,
                         use_relu=use_relu,
-                        smooth_factor=1.0,  # Reduced smoothing
-                        alpha=0.5  # Lower alpha
+                        smooth_factor=0.3,  # Sharper focus
+                        alpha=0.65  # Better visibility
                     )
                     
                     # Encode to base64
@@ -403,6 +454,23 @@ def debug_gradcam():
                     })
                 except Exception as e:
                     print(f"Error with layer {layer_idx}, relu={use_relu}: {e}")
+    
+    # If we got no results, add the attention map as fallback
+    if not results:
+        with torch.no_grad():
+            _, attn_map = attention_model(img_tensor)
+        
+        attn_map_np = attn_map[0].squeeze().cpu().numpy()
+        overlay = create_overlay(attn_map_np, img_np)
+        
+        _, buffer = cv2.imencode('.jpg', overlay)
+        overlay_base64 = base64.b64encode(buffer).decode("utf-8")
+        
+        results.append({
+            'layer': "Attention Map (Fallback)",
+            'relu': 'N/A',
+            'image': overlay_base64
+        })
     
     # Include probability in the response
     return jsonify({
