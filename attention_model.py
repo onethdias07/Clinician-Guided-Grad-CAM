@@ -88,9 +88,9 @@ class SimpleAttentionCNN(nn.Module):
             output: shape [B,1] (probability of TB).
             attention_map: shape [B,1,H',W'] (attention map after the final conv block).
         """
-        features = self.feature_extractor(x)              # [B,64,30,30]
-        attention_map = self.spatial_attention(features)  # [B,1,30,30]
-        attended_features = features * attention_map      # element-wise multiplication
-
-        output = self.classifier(attended_features)       # [B,1]
+        features = self.feature_extractor(x)
+        attention_map = self.spatial_attention(features)
+        attended_features = features * attention_map
+        
+        output = self.classifier(attended_features)
         return output, attention_map

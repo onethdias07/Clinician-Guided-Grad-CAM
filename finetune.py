@@ -91,13 +91,16 @@ class TBXrayFeedbackDataset(Dataset):
 
         # Convert to PIL for transforms
         pil_img = Image.fromarray(img_gray, mode='L')
-
+        
+        # Apply transforms or ensure 256x256 size
         if self.transform:
             img_tensor = self.transform(pil_img)
         else:
+            # Resize to 256x256 to match model's expected input size
+            pil_img = pil_img.resize((256, 256), Image.BICUBIC)
             img_array = np.array(pil_img, dtype=np.float32) / 255.0
             img_tensor = torch.tensor(img_array).unsqueeze(0)  # [1,H,W]
-
+            
         # Process mask if available
         mask_tensor = None
         if mask_path and os.path.isfile(mask_path):
@@ -203,14 +206,71 @@ def load_feedback_data(feedback_csv, images_dir, masks_dir):
     Returns:
       filepaths (list[str]), labels (list[int]), mask_paths (list[str or None])
     """
+    # Add debug information
+    logger.info(f"Debug: Looking for feedback CSV at: {feedback_csv}")
+    logger.info(f"Debug: File exists? {os.path.exists(feedback_csv)}")
+    logger.info(f"Debug: Images directory: {images_dir} (exists: {os.path.isdir(images_dir)})")
+    logger.info(f"Debug: Masks directory: {masks_dir} (exists: {os.path.isdir(masks_dir)})")
+    
+    # Try alternative path resolution if file not found
     if not os.path.isfile(feedback_csv):
-        logger.error("Feedback log CSV not found: %s", feedback_csv)
+        try:
+            from pathlib import Path
+            base_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+            alt_feedback_csv = base_dir / 'feedback' / 'feedback_log.csv'
+            logger.info(f"Debug: Trying alternative path: {alt_feedback_csv}")
+            logger.info(f"Debug: Alternative path exists? {os.path.exists(alt_feedback_csv)}")
+            
+            if os.path.exists(alt_feedback_csv):
+                feedback_csv = str(alt_feedback_csv)
+                # Also update images and masks directories
+                images_dir = str(base_dir / 'feedback' / 'images')
+                masks_dir = str(base_dir / 'feedback' / 'masks')
+                logger.info(f"Debug: Using alternative paths for feedback data")
+        except Exception as e:
+            logger.error(f"Debug: Error resolving alternative path: {e}")
+
+    if not os.path.isfile(feedback_csv):
+        logger.error(f"Feedback log CSV not found: {feedback_csv}")
         return [], [], []
 
     try:
-        df = pd.read_csv(feedback_csv)
+        # Read the file contents to handle the comment line
+        with open(feedback_csv, 'r') as f:
+            lines = f.readlines()
+            
+        # Skip comment line if it starts with //
+        if lines and lines[0].strip().startswith('//'):
+            logger.info(f"Debug: Skipping comment line: {lines[0].strip()}")
+            clean_lines = lines[1:]
+        else:
+            clean_lines = lines
+            
+        # Check if we need to add a header row
+        if clean_lines and not any(line.lower().startswith('image_filename') for line in clean_lines):
+            logger.info(f"Debug: Adding header row to CSV data")
+            header = "image_filename,mask_filename,label,timestamp\n"
+            clean_lines.insert(0, header)
+        
+        # Create a temporary file with clean data for pandas
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as temp:
+            temp_path = temp.name
+            temp.writelines(clean_lines)
+            
+        # Read the cleaned CSV
+        logger.info(f"Debug: Reading cleaned CSV from: {temp_path}")
+        df = pd.read_csv(temp_path)
+        os.unlink(temp_path)  # Clean up temp file
+        
+        # Log dataframe information
+        logger.info(f"Debug: CSV columns: {df.columns.tolist()}")
+        logger.info(f"Debug: CSV has {len(df)} rows")
+        if len(df) > 0:
+            logger.info(f"Debug: First row: {df.iloc[0].to_dict()}")
+        
     except Exception as e:
-        logger.error("Failed to read feedback CSV: %s", e)
+        logger.error(f"Failed to read feedback CSV: {e}")
         return [], [], []
     
     # Check for required columns
@@ -276,6 +336,8 @@ def load_feedback_data(feedback_csv, images_dir, masks_dir):
             if not os.path.isfile(img_abs):
                 logger.warning(f"Image not found: {img_rel}, skipping")
                 continue
+            else:
+                logger.info(f"Debug: Found image using basename: {os.path.basename(img_rel)}")
 
         # Resolve mask path
         mask_abs = None
@@ -287,6 +349,8 @@ def load_feedback_data(feedback_csv, images_dir, masks_dir):
                 if not os.path.isfile(mask_abs):
                     logger.warning(f"Mask not found: {mask_rel}, proceeding without mask")
                     mask_abs = None
+                else:
+                    logger.info(f"Debug: Found mask using basename: {os.path.basename(mask_rel)}")
 
         filepaths.append(img_abs)
         labels.append(int_label)
@@ -460,6 +524,30 @@ def evaluate_model(model, dataloader, criterion, device, mask_loss_weight):
         'accuracy': correct / total_samples,
         'mask_samples': valid_mask_samples
     }
+    
+    
+
+def custom_collate(batch):
+    """
+    Custom collate function that handles None values for masks.
+    """
+    # Separate elements by type
+    images = []
+    labels = []
+    masks = []
+    
+    for item in batch:
+        images.append(item[0])
+        labels.append(item[1])
+        masks.append(item[2])  # Can be None
+    
+    # Stack tensors
+    images = torch.stack(images)
+    labels = torch.stack(labels)
+    
+    # Don't try to stack masks - leave as list since they may contain None
+    
+    return images, labels, masks    
 
 ###############################################################################
 # 7. MAIN FUNCTION
@@ -525,12 +613,14 @@ def main():
 
     # Data transformations
     train_transforms = T.Compose([
+        T.Resize((256, 256)),  # Match expected input size for the model
         T.RandomHorizontalFlip(p=0.5),
         T.RandomRotation(degrees=10),
         T.ToTensor()
     ])
-    
+
     val_transforms = T.Compose([
+        T.Resize((256, 256)),  # Match expected input size for the model
         T.ToTensor()
     ])
 
@@ -543,9 +633,20 @@ def main():
         val_paths, val_labels, val_masks, transform=val_transforms
     )
 
-    # Create dataloaders
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    # Create dataloaders with custom collate function
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True,
+        collate_fn=custom_collate
+    )
+
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False,
+        collate_fn=custom_collate
+    )
 
     # Set up training
     criterion = nn.BCELoss()
