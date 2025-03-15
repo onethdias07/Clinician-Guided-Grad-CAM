@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 class SpatialAttention(nn.Module):
     """
-    A simple spatial attention module inspired by CBAM:
     - Takes an input feature map of shape [B, C, H, W].
     - Produces a single-channel attention map of shape [B, 1, H, W].
     - We'll multiply this attention map by the input feature map 
@@ -43,7 +42,6 @@ class SpatialAttention(nn.Module):
 
 class SimpleAttentionCNN(nn.Module):
     """
-    A CNN architecture for TB chest X-ray classification that includes:
     - Three convolution blocks (Conv->ReLU->MaxPool).
     - A SpatialAttention module inserted after the final conv layer.
     - A simple MLP classifier (Flatten->Linear->ReLU->Dropout->Linear->Sigmoid).

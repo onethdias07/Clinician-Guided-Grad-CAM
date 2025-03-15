@@ -9,7 +9,7 @@ body {
 }
 .img-container {
     margin-bottom: 20px;
-    position: relative; /* Important so we can overlay a canvas on top of the image */
+    position: relative; 
 }
 .img-container img {
     width: 80%;
@@ -33,9 +33,9 @@ h1, h2, h3 {
     border: 2px solid rgba(0,0,0,0.2);
     border-radius: 5px;
     cursor: crosshair;
-    display: none; /* hidden until user toggles drawing */
+    display: none; 
 }
-/* The mask canvas remains hidden – used internally to build a binary mask */
+
 #maskCanvas {
     display: none;
 }
@@ -66,7 +66,6 @@ label input[type="radio"] {
     margin-right: 5px;
 }
 
-/* Admin section for model refinement */
 .admin-section {
     margin-top: 30px;
     padding: 20px;
@@ -124,7 +123,6 @@ label input[type="radio"] {
     background-color: #218838;
 }
 
-/* Progress Bar Styles */
 .progress-bar-container {
     width: 100%;
     background-color: #f0f0f0;

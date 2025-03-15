@@ -14,7 +14,6 @@ from PIL import Image
 import cv2
 from io import BytesIO
 
-#Importing the Attention-based model and Grad-CAM
 from attention_model import SimpleAttentionCNN, SpatialAttention
 from grad_cam.grad_cam import GradCAM, show_grad_cam, find_best_target_layer
 
