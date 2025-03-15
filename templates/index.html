@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Grad-CAM for TB Chest X-Rays</title>
+    <title>Clinician Guided Grad-CAM</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 
 <body>
     <div class="content">
-        <h1>Grad-CAM for TB Chest X-Ray</h1>
+        <h1>Clinician Guided Grad-CAM for Tuberculosis Detection</h1>
 
         <form action="/predict" method="POST" enctype="multipart/form-data" style="margin-bottom: 20px;">
             <input type="file" name="file" accept="image/*" required>
@@ -65,13 +65,19 @@
         </div>
         <button id="runFinetuningBtn" class="admin-button">Run Offline Refinement</button>
         <button id="switchModelBtn" class="admin-button">Switch to Refined Model</button>
+        
+        <!-- Add progress bar container -->
+        <div id="progress-container" style="display: none; margin-top: 15px;">
+            <p>Finetuning progress:</p>
+            <div class="progress-bar-container">
+                <div id="progress-bar" class="progress-bar"></div>
+            </div>
+            <p id="progress-text">0%</p>
+        </div>
+        
         <div id="finetuning-status" class="status-box"></div>
     </div>
 
     <script src="/static/js/draw_mask.js" defer></script>
-    
-    <script>
-
-    </script>
 </body>
 </html>

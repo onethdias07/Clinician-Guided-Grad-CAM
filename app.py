@@ -566,14 +566,26 @@ def run_finetuning():
     
     # Generate timestamp for this fine-tuning run
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    new_model_path = os.path.join(finetuning_dir, f'tb_chest_xray_refined_{timestamp}.pt')
+    
+    # Use absolute path and ensure directory exists
+    abs_finetuning_dir = os.path.abspath(finetuning_dir)
+    os.makedirs(abs_finetuning_dir, exist_ok=True)
+    
+    new_model_path = os.path.join(abs_finetuning_dir, f'tb_chest_xray_refined_{timestamp}.pt')
+    
+    # Log the paths for debugging
+    print(f"DEBUG: Finetuning directory: {abs_finetuning_dir}")
+    print(f"DEBUG: New model will be saved to: {new_model_path}")
+    print(f"DEBUG: Directory exists: {os.path.isdir(abs_finetuning_dir)}")
+    print(f"DEBUG: Directory is writable: {os.access(abs_finetuning_dir, os.W_OK)}")
     
     # Start fine-tuning in a separate thread to avoid blocking
     finetuning_status = {
         "running": True,
         "message": "Fine-tuning started...",
         "success": False,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        "new_model_path": new_model_path  # Store the path for later reference
     }
     
     thread = threading.Thread(
@@ -594,16 +606,26 @@ def run_finetuning_process(old_model_path, new_model_path):
     global finetuning_status
     
     try:
-        # Construct the command
+        # Ensure the parent directory exists
+        os.makedirs(os.path.dirname(new_model_path), exist_ok=True)
+        
+        print(f"DEBUG: Starting finetuning process")
+        print(f"DEBUG: Old model path: {old_model_path}")
+        print(f"DEBUG: New model path: {new_model_path}")
+        
+        # Construct the command with absolute paths
         cmd = [
-            sys.executable, "finetune.py",
-            "--old-model-path", old_model_path,
-            "--new-model-path", new_model_path,
-            "--feedback-log", log_csv_path,
-            "--feedback-images-dir", images_dir,
-            "--feedback-masks-dir", masks_dir,
+            sys.executable,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "finetune.py"),
+            "--old-model-path", os.path.abspath(old_model_path),
+            "--new-model-path", os.path.abspath(new_model_path),
+            "--feedback-log", os.path.abspath(log_csv_path),
+            "--feedback-images-dir", os.path.abspath(images_dir),
+            "--feedback-masks-dir", os.path.abspath(masks_dir),
             "--epochs", "10"
         ]
+        
+        print(f"DEBUG: Running command: {' '.join(cmd)}")
         
         # Run the process
         process = subprocess.Popen(
@@ -614,14 +636,28 @@ def run_finetuning_process(old_model_path, new_model_path):
         )
         
         stdout, stderr = process.communicate()
+        print(f"DEBUG: Process stdout: {stdout[:500]}...")  # Print beginning of stdout
+        
+        if stderr:
+            print(f"DEBUG: Process stderr: {stderr}")
         
         if process.returncode == 0:
-            finetuning_status = {
-                "running": False,
-                "message": f"Fine-tuning completed successfully! New model saved to: {os.path.basename(new_model_path)}",
-                "success": True,
-                "new_model_path": new_model_path
-            }
+            # Check if file was actually created
+            if os.path.exists(new_model_path):
+                print(f"DEBUG: Model file was successfully created at {new_model_path}")
+                finetuning_status = {
+                    "running": False,
+                    "message": f"Fine-tuning completed successfully! New model saved to: {os.path.basename(new_model_path)}",
+                    "success": True,
+                    "new_model_path": new_model_path
+                }
+            else:
+                print(f"DEBUG: Process completed but model file was not found at {new_model_path}")
+                finetuning_status = {
+                    "running": False,
+                    "message": f"Fine-tuning process completed, but the model file was not found. Check server logs.",
+                    "success": False
+                }
         else:
             finetuning_status = {
                 "running": False,
@@ -629,6 +665,7 @@ def run_finetuning_process(old_model_path, new_model_path):
                 "success": False
             }
     except Exception as e:
+        print(f"DEBUG: Exception in finetuning process: {str(e)}")
         finetuning_status = {
             "running": False,
             "message": f"Error during fine-tuning: {str(e)}",
@@ -639,7 +676,17 @@ def run_finetuning_process(old_model_path, new_model_path):
 def get_finetuning_status():
     """Get the status of the current or last fine-tuning process"""
     global finetuning_status
-    return jsonify(finetuning_status)
+    
+    # Add feedback count to status
+    status_copy = finetuning_status.copy()
+    status_copy['feedback_count'] = count_feedback_items()
+    
+    # If finetuning is complete, check if file exists
+    if status_copy.get('success', False) and 'new_model_path' in status_copy:
+        model_path = status_copy['new_model_path']
+        status_copy['model_exists'] = os.path.exists(model_path)
+        
+    return jsonify(status_copy)
 
 @app.route('/switch_model', methods=['POST'])
 def switch_model():

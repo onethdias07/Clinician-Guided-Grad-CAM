@@ -563,7 +563,19 @@ def main():
     logger.info(f"Using device: {device}")
 
     # Create output directory if needed
-    os.makedirs(os.path.dirname(args.new_model_path), exist_ok=True)
+    output_dir = os.path.dirname(args.new_model_path)
+    if not os.path.exists(output_dir):
+        logger.info(f"Creating output directory: {output_dir}")
+        os.makedirs(output_dir, exist_ok=True)
+    
+    # Debug output directory status
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Directory exists: {os.path.isdir(output_dir)}")
+    logger.info(f"Directory is writable: {os.access(output_dir, os.W_OK)}")
+    
+    # Convert to absolute path
+    args.new_model_path = os.path.abspath(args.new_model_path)
+    logger.info(f"Absolute path for new model: {args.new_model_path}")
     
     # Load existing model
     if not os.path.isfile(args.old_model_path):
@@ -613,9 +625,12 @@ def main():
 
     # Data transformations
     train_transforms = T.Compose([
-        T.Resize((256, 256)),  # Match expected input size for the model
+        T.Resize((256, 256)),
         T.RandomHorizontalFlip(p=0.5),
-        T.RandomRotation(degrees=10),
+        T.RandomRotation(degrees=15),
+        T.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
+        T.ColorJitter(brightness=0.2, contrast=0.2),
+        T.RandomAutocontrast(p=0.2),
         T.ToTensor()
     ])
 
@@ -696,10 +711,37 @@ def main():
         # Save if validation improved
         if val_metrics['accuracy'] > best_val_acc:
             best_val_acc = val_metrics['accuracy']
-            torch.save(model.state_dict(), args.new_model_path)
-            logger.info(f"Validation accuracy improved to {best_val_acc:.4f}. Model saved to {args.new_model_path}")
+            try:
+                # Ensure the directory exists before saving
+                save_dir = os.path.dirname(args.new_model_path)
+                os.makedirs(save_dir, exist_ok=True)
+                
+                # Save the model
+                torch.save(model.state_dict(), args.new_model_path)
+                
+                # Verify the file was created
+                if os.path.exists(args.new_model_path):
+                    logger.info(f"Validation accuracy improved to {best_val_acc:.4f}. Model saved to {args.new_model_path}")
+                else:
+                    logger.error(f"Failed to save model: File not created at {args.new_model_path}")
+            except Exception as e:
+                logger.error(f"Error saving model: {e}")
+
+    # Save final model regardless of validation improvement
+    try:
+        torch.save(model.state_dict(), args.new_model_path)
+        logger.info(f"Final model saved to {args.new_model_path}")
+    except Exception as e:
+        logger.error(f"Error saving final model: {e}")
 
     logger.info(f"Fine-tuning complete. Best validation accuracy: {best_val_acc:.4f}")
+    
+    # Final verification
+    if os.path.exists(args.new_model_path):
+        file_size = os.path.getsize(args.new_model_path) / 1024 / 1024  # Size in MB
+        logger.info(f"Verified: Model file exists at {args.new_model_path} (Size: {file_size:.2f} MB)")
+    else:
+        logger.error(f"ERROR: Model file not found at {args.new_model_path} after training")
 
 if __name__ == "__main__":
     main()
