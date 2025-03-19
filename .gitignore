@@ -1,1 +1,95 @@
-Testing/test_dataset/
+# Project-specific directories
+**/CHest-X-Ray/
+**/datasets/
+**/data/
+**/tuberculosis-dataset/
+**/images/
+**/masks/
+
+# Feedback and model data
+**/feedback/
+**/finetuning/
+!feedback/.gitkeep
+!finetuning/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+ENV/
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+.jupyter/
+
+# PyTorch/ML specific
+*.pt
+*.pth
+*.h5
+*.onnx
+*.bin
+*.pb
+!model/*.pt
+runs/
+checkpoints/
+tb_logs/
+
+# Logs and databases
+*.log
+app_debug.log
+*.db
+*.sqlite
+*.sqlite3
+
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+.directory
+*~
+ehthumbs.db
+Icon?
+
+# Editor directories and files
+.idea
+.vscode
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+
+# Large data files
+*.csv
+*.tsv
+*.npy
+*.npz
+!feedback/feedback_log.csv
+
+# Exclude generated JavaScript
+node_modules/
+package-lock.json
+frontend/build/
+frontend/coverage/
+
+# Exclude large documentation files
+*.pdf
+*.pptx
+*.docx
+*.xlsx
