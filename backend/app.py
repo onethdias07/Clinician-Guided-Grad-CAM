@@ -183,7 +183,12 @@ def save_feedback(image_data, mask_data, user_label):
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
     unique_id = f"{timestamp_str}_{uuid.uuid4().hex[:6]}"
 
-    image_filename = f"{unique_id}_image.jpg"
+    # Check file extension in the base64 data
+    if "image/png" in image_data.split(";")[0]:
+        image_filename = f"{unique_id}_image.png"
+    else:
+        image_filename = f"{unique_id}_image.jpg"
+    
     mask_filename = f"{unique_id}_mask.png"
 
     image_path = os.path.join(images_dir, image_filename)
@@ -458,7 +463,7 @@ def check_finetuning_status():
 
 @app.route('/api/run_finetuning', methods=['POST'])
 def run_finetuning():
-    """Start the finetuning process"""
+    """Start the finetuning process with enhanced error handling"""
     global finetuning_process, finetuning_status
     
     # Log the request for debugging
@@ -486,7 +491,23 @@ def run_finetuning():
     # Make sure finetuning directory exists
     os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'finetuning'), exist_ok=True)
     
-    # Set up the command
+    # Check for required dependencies
+    try:
+        import psutil
+        logging.info("psutil dependency found")
+    except ImportError:
+        logging.error("psutil dependency missing - installing")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil"])
+            logging.info("psutil installed successfully")
+        except Exception as e:
+            logging.error(f"Failed to install psutil: {e}")
+            return jsonify({
+                "success": False,
+                "message": f"Failed to install required dependency: {str(e)}"
+            })
+    
+    # Set up the command with the new parameters
     cmd = [
         sys.executable,  # Current Python interpreter
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'finetune.py'),
@@ -495,7 +516,13 @@ def run_finetuning():
         "--feedback-log", os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback", "feedback_log.csv"),
         "--feedback-images-dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback", "images"),
         "--feedback-masks-dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback", "masks"),
-        "--epochs", "10",
+        "--include-original-data",
+        "--balance-datasets",
+        "--freeze-layers", "9",
+        "--gradual-unfreeze",
+        "--initial-lr", "1e-5",
+        "--final-lr", "1e-4",
+        "--epochs", "25",
         "--batch-size", "8"
     ]
     
@@ -611,12 +638,53 @@ def switch_model():
 @app.route('/api/current_model', methods=['GET'])
 def get_current_model():
     """API endpoint to get the current model name"""
-    # We'll need a way to track the current model name
-    # This is just a placeholder and should be updated to actually track the model
-    model_name = "tb_chest_xray_attention_best.pt"  # Default name
+    model_name = "tb_chest_xray_attention_best.pt"
     
-    # Return the model name
     return jsonify({"model_name": model_name})
+
+@app.route('/api/finetuning_logs', methods=['GET'])
+def get_finetuning_logs():
+    """API endpoint to get the latest finetuning log file contents"""
+    try:
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+        if not os.path.exists(log_dir):
+            return jsonify({
+                "success": False,
+                "message": "No log directory found",
+                "log_content": ""
+            })
+            
+        # Find the most recent log file
+        log_files = [f for f in os.listdir(log_dir) if f.startswith('finetune_') and f.endswith('.log')]
+        if not log_files:
+            return jsonify({
+                "success": False,
+                "message": "No log files found",
+                "log_content": ""
+            })
+            
+        # Sort by modification time (newest first)
+        newest_log = max(log_files, key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
+        log_path = os.path.join(log_dir, newest_log)
+        
+        # Read log file content
+        with open(log_path, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+            
+        return jsonify({
+            "success": True,
+            "message": f"Retrieved log file: {newest_log}",
+            "log_content": log_content,
+            "log_file": newest_log
+        })
+        
+    except Exception as e:
+        logging.error(f"Error retrieving finetuning logs: {e}")
+        return jsonify({
+            "success": False,
+            "message": f"Error: {str(e)}",
+            "log_content": ""
+        })
 
 if __name__ == "__main__":
     app.run(debug=True, host='0.0.0.0', port=8000)
