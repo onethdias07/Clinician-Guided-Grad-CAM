@@ -8,7 +8,8 @@ import json
 import logging
 import subprocess
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import wraps
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS 
@@ -17,6 +18,8 @@ import numpy as np
 from PIL import Image
 import cv2
 from io import BytesIO
+from werkzeug.security import generate_password_hash, check_password_hash
+import jwt
 
 from attention_model import SimpleAttentionCNN, SpatialAttention
 from grad_cam.grad_cam import GradCAM, show_grad_cam, find_best_target_layer
@@ -35,13 +38,75 @@ finetuning_status = {
     "feedback_count": 0
 }
 
+# Add models dictionary to store loaded models
+loaded_models = {
+    "original": None,
+    "finetuned": None
+}
+
+############################################################
+# USER MANAGEMENT
+############################################################
+# Simple in-memory user storage (in production, use a database)
+users = {}
+JWT_SECRET = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
+JWT_EXPIRATION = 24 * 60 * 60  # 24 hours in seconds
+
+# Authentication decorator
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        # Get token from headers
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+        
+        # Return error if no token
+        if not token:
+            return jsonify({
+                'message': 'Authentication token is missing',
+                'authenticated': False
+            }), 401
+        
+        # Verify token
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            current_user = users.get(data['username'])
+            if not current_user:
+                return jsonify({
+                    'message': 'User not found',
+                    'authenticated': False
+                }), 401
+        except jwt.ExpiredSignatureError:
+            return jsonify({
+                'message': 'Token has expired',
+                'authenticated': False
+            }), 401
+        except jwt.InvalidTokenError:
+            return jsonify({
+                'message': 'Invalid token',
+                'authenticated': False
+            }), 401
+            
+        # If we get here, token is valid
+        return f(current_user, *args, **kwargs)
+    
+    return decorated
+
 ############################################################
 # UTILITY FUNCTIONS
 ############################################################
-def get_probability(img):
+def get_probability(img, model_type="current"):
     """
     Calculate TB probability from image (accepts PIL, numpy, or tensor)
     Returns probability percentage (0-100)
+    
+    Parameters:
+    - img: The image to analyze
+    - model_type: "current" (active model), "original", or "finetuned"
     """
     if isinstance(img, Image.Image):
         img_np = np.array(img.convert("L"))
@@ -57,15 +122,23 @@ def get_probability(img):
     else:
         raise TypeError("Image must be PIL Image, numpy array, or torch Tensor")
     
+    # Select the appropriate model
+    if model_type == "original" and loaded_models["original"] is not None:
+        model = loaded_models["original"]
+    elif model_type == "finetuned" and loaded_models["finetuned"] is not None:
+        model = loaded_models["finetuned"]
+    else:
+        model = attention_model  # Default to current model
+    
     with torch.no_grad():
-        output, _ = attention_model(img_tensor)
+        output, _ = model(img_tensor)
         pred_prob = output.item()
         pred_prob_percent = round(pred_prob * 100, 2)
         
     return pred_prob_percent
 
 def load_attention_model(model_path=None):
-    if model_path is None or not os.path.exists(model_path):
+    if (model_path is None or not os.path.exists(model_path)):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
 
@@ -78,6 +151,32 @@ def load_attention_model(model_path=None):
     
     model.eval()
     return model
+
+def load_both_models():
+    """Load both original and latest finetuned models for comparison"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Load original model if not already loaded
+    if loaded_models["original"] is None:
+        original_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
+        try:
+            loaded_models["original"] = load_attention_model(original_path)
+            logging.info(f"Loaded original model from {original_path}")
+        except Exception as e:
+            logging.error(f"Error loading original model: {e}")
+    
+    # Find and load latest finetuned model if not already loaded
+    if loaded_models["finetuned"] is None:
+        latest_model = find_latest_refined_model()
+        if latest_model:
+            finetuned_path = os.path.join(base_dir, 'finetuning', latest_model)
+            try:
+                loaded_models["finetuned"] = load_attention_model(finetuned_path)
+                logging.info(f"Loaded finetuned model from {finetuned_path}")
+            except Exception as e:
+                logging.error(f"Error loading finetuned model: {e}")
+    
+    return loaded_models["original"] is not None, loaded_models["finetuned"] is not None
 
 def create_overlay(map_2d, original_gray, size=256, colormap=cv2.COLORMAP_INFERNO, alpha=0.7):
     map_2d = np.asarray(map_2d, dtype=np.float32)
@@ -176,6 +275,189 @@ def process_image(file):
         'attention_image': attn_overlay_base64,
         'tb_probability': pred_prob_percent
     }
+
+def process_image_with_comparison(file):
+    """Process image and return results from both original and finetuned models"""
+    # Load and preprocess
+    pil_img = Image.open(file).convert("RGB")
+    pil_img_gray = pil_img.convert("L")
+
+    # Convert original to base64
+    buf = BytesIO()
+    pil_img.save(buf, format="JPEG")
+    original_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    # Prepare for model input
+    img_np = np.array(pil_img_gray)
+    img_np = cv2.resize(img_np, (256, 256))
+    img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    img_tensor = img_tensor / 255.0
+
+    # Ensure both models are loaded
+    original_loaded, finetuned_loaded = load_both_models()
+    
+    results = {
+        'original_image': original_base64,
+        'has_comparison': original_loaded and finetuned_loaded
+    }
+    
+    # Process with original model if available
+    if original_loaded:
+        try:
+            # Get probability
+            original_prob = get_probability(img_tensor, "original")
+            
+            # Get attention maps
+            with torch.no_grad():
+                original_output, original_attn = loaded_models["original"](img_tensor)
+            
+            # Create attention overlay
+            original_attn_np = original_attn[0].squeeze().cpu().numpy()
+            original_overlay = create_overlay(original_attn_np, img_np, size=256)
+            _, buffer = cv2.imencode('.jpg', original_overlay)
+            original_attn_base64 = base64.b64encode(buffer).decode("utf-8")
+            
+            # Generate Grad-CAM
+            try:
+                target_layer = find_best_target_layer(loaded_models["original"], img_tensor)
+                _, original_gradcam = show_grad_cam(
+                    img_np, 
+                    loaded_models["original"], 
+                    target_layer=target_layer,
+                    use_relu=True,
+                    smooth_factor=0.3,
+                    alpha=0.65
+                )
+            except Exception:
+                # Use attention map as fallback
+                original_gradcam = original_overlay
+            
+            # Encode Grad-CAM overlay to base64
+            _, buffer = cv2.imencode('.jpg', original_gradcam)
+            original_gradcam_base64 = base64.b64encode(buffer).decode("utf-8")
+            
+            results.update({
+                'original_probability': original_prob,
+                'original_attention': original_attn_base64,
+                'original_gradcam': original_gradcam_base64
+            })
+        except Exception as e:
+            logging.error(f"Error processing with original model: {e}")
+            results['original_error'] = str(e)
+    
+    # Process with finetuned model if available
+    if finetuned_loaded:
+        try:
+            # Get probability
+            finetuned_prob = get_probability(img_tensor, "finetuned")
+            
+            # Get attention maps
+            with torch.no_grad():
+                finetuned_output, finetuned_attn = loaded_models["finetuned"](img_tensor)
+            
+            # Create attention overlay
+            finetuned_attn_np = finetuned_attn[0].squeeze().cpu().numpy()
+            finetuned_overlay = create_overlay(finetuned_attn_np, img_np, size=256)
+            _, buffer = cv2.imencode('.jpg', finetuned_overlay)
+            finetuned_attn_base64 = base64.b64encode(buffer).decode("utf-8")
+            
+            # Generate Grad-CAM
+            try:
+                target_layer = find_best_target_layer(loaded_models["finetuned"], img_tensor)
+                _, finetuned_gradcam = show_grad_cam(
+                    img_np, 
+                    loaded_models["finetuned"], 
+                    target_layer=target_layer,
+                    use_relu=True,
+                    smooth_factor=0.3,
+                    alpha=0.65
+                )
+            except Exception:
+                # Use attention map as fallback
+                finetuned_gradcam = finetuned_overlay
+            
+            # Encode Grad-CAM overlay to base64
+            _, buffer = cv2.imencode('.jpg', finetuned_gradcam)
+            finetuned_gradcam_base64 = base64.b64encode(buffer).decode("utf-8")
+            
+            results.update({
+                'finetuned_probability': finetuned_prob,
+                'finetuned_attention': finetuned_attn_base64,
+                'finetuned_gradcam': finetuned_gradcam_base64
+            })
+            
+            # Calculate IoU and correlation if both models available
+            if original_loaded:
+                try:
+                    # Calculate metrics between attention maps
+                    iou = calculate_iou(original_attn_np, finetuned_attn_np)
+                    correlation, _ = calculate_correlation(original_attn_np, finetuned_attn_np)
+                    
+                    results.update({
+                        'attention_iou': round(float(iou), 4),
+                        'attention_correlation': round(float(correlation), 4)
+                    })
+                except Exception as e:
+                    logging.error(f"Error calculating attention metrics: {e}")
+        except Exception as e:
+            logging.error(f"Error processing with finetuned model: {e}")
+            results['finetuned_error'] = str(e)
+    
+    # Also add normal processing results
+    normal_results = process_image(file)
+    results.update({
+        'tb_probability': normal_results['tb_probability'],
+        'grad_cam_image': normal_results['grad_cam_image'],
+        'attention_image': normal_results['attention_image']
+    })
+    
+    return results
+
+def calculate_iou(attn_map1, attn_map2, threshold=0.5):
+    """Calculate IoU between two attention maps"""
+    # Normalize maps to [0,1]
+    if attn_map1.max() > 0:
+        attn_map1 = (attn_map1 - attn_map1.min()) / (attn_map1.max() - attn_map1.min())
+    if attn_map2.max() > 0:
+        attn_map2 = (attn_map2 - attn_map2.min()) / (attn_map2.max() - attn_map2.min())
+        
+    # Resize to same shape if needed
+    if attn_map1.shape != attn_map2.shape:
+        attn_map2 = cv2.resize(attn_map2, (attn_map1.shape[1], attn_map1.shape[0]))
+        
+    # Apply threshold
+    binary_map1 = (attn_map1 >= threshold).astype(np.float32)
+    binary_map2 = (attn_map2 >= threshold).astype(np.float32)
+    
+    # Calculate IoU
+    intersection = np.logical_and(binary_map1, binary_map2).sum()
+    union = np.logical_or(binary_map1, binary_map2).sum()
+    
+    if union == 0:
+        return 0
+    return intersection / union
+
+def calculate_correlation(attn_map1, attn_map2):
+    """Calculate Pearson correlation between two attention maps"""
+    from scipy import stats
+    
+    # Normalize maps to [0,1]
+    if attn_map1.max() > 0:
+        attn_map1 = (attn_map1 - attn_map1.min()) / (attn_map1.max() - attn_map1.min())
+    if attn_map2.max() > 0:
+        attn_map2 = (attn_map2 - attn_map2.min()) / (attn_map2.max() - attn_map2.min())
+    
+    # Resize to same shape if needed
+    if attn_map1.shape != attn_map2.shape:
+        attn_map2 = cv2.resize(attn_map2, (attn_map1.shape[1], attn_map1.shape[0]))
+    
+    # Flatten arrays
+    flat1 = attn_map1.flatten()
+    flat2 = attn_map2.flatten()
+    
+    # Calculate correlation
+    corr, p_value = stats.pearsonr(flat1, flat2)
+    return corr, p_value
 
 def save_feedback(image_data, mask_data, user_label):
     """Common feedback saving logic for both web and API routes"""
@@ -332,6 +614,79 @@ logging.basicConfig(
 logger = logging.getLogger("App")
 
 ############################################################
+# AUTHENTICATION ROUTES
+############################################################
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    
+    if not data or not data.get('username') or not data.get('password'):
+        return jsonify({'message': 'Username and password are required'}), 400
+        
+    username = data.get('username')
+    
+    # Check if user already exists
+    if username in users:
+        return jsonify({'message': 'User already exists'}), 409
+    
+    # Create new user with hashed password
+    hashed_password = generate_password_hash(data.get('password'))
+    users[username] = {
+        'username': username,
+        'password': hashed_password,
+        'role': data.get('role', 'user')  # Default to 'user' role
+    }
+    
+    return jsonify({
+        'message': 'User registered successfully',
+        'username': username
+    }), 201
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    
+    if not data or not data.get('username') or not data.get('password'):
+        return jsonify({'message': 'Username and password are required'}), 400
+        
+    username = data.get('username')
+    
+    # Check if user exists
+    if username not in users:
+        return jsonify({'message': 'Invalid username or password'}), 401
+    
+    # Verify password
+    user = users[username]
+    if not check_password_hash(user['password'], data.get('password')):
+        return jsonify({'message': 'Invalid username or password'}), 401
+    
+    # Generate JWT token
+    token_expiration = datetime.utcnow() + timedelta(seconds=JWT_EXPIRATION)
+    payload = {
+        'username': username,
+        'role': user['role'],
+        'exp': token_expiration
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    
+    return jsonify({
+        'message': 'Login successful',
+        'token': token,
+        'username': username,
+        'role': user['role'],
+        'expires': JWT_EXPIRATION
+    })
+
+@app.route('/api/auth/verify', methods=['GET'])
+@token_required
+def verify_token(current_user):
+    return jsonify({
+        'authenticated': True,
+        'username': current_user['username'],
+        'role': current_user['role']
+    })
+
+############################################################
 # WEB ROUTES
 ############################################################
 @app.route('/')
@@ -387,20 +742,12 @@ def submit_mask():
         return jsonify({"error": f"Error: {str(e)}"}), 500
 
 ############################################################
-# API ENDPOINTS
+# PROTECTED API ENDPOINTS
 ############################################################
-@app.route('/api/status', methods=['GET'])
-def api_status():
-    """API health check endpoint"""
-    return jsonify({
-        "status": "ok",
-        "message": "API is running",
-        "version": "1.0.0"
-    })
-
 @app.route('/api/predict', methods=['POST'])
-def api_predict():
-    """API endpoint for image prediction, accepts multipart/form-data"""
+@token_required
+def api_predict(current_user):
+    """Protected API endpoint for image prediction, requires authentication"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file part in request'}), 400
 
@@ -409,14 +756,22 @@ def api_predict():
         return jsonify({'error': 'No selected file'}), 400
 
     try:
-        result = process_image(file)
+        # Add support for interpretability comparison
+        compare = request.args.get('compare', 'false').lower() == 'true'
+        
+        if compare:
+            result = process_image_with_comparison(file)
+        else:
+            result = process_image(file)
+            
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'Error processing image: {str(e)}'}), 500
 
 @app.route('/api/feedback', methods=['POST'])
-def api_feedback():
-    """API endpoint for submitting feedback (mask + label)"""
+@token_required
+def api_feedback(current_user):
+    """Protected API endpoint for submitting feedback (mask + label)"""
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON payload"}), 400
@@ -435,14 +790,16 @@ def api_feedback():
         return jsonify({"error": f"Error saving feedback: {str(e)}"}), 500
 
 @app.route('/api/feedback_count', methods=['GET'])
-def api_feedback_count():
-    """API endpoint to get the current feedback count"""
+@token_required
+def api_feedback_count(current_user):
+    """Protected API endpoint to get the current feedback count"""
     count = count_feedback_items()
     return jsonify({"count": count})
 
 @app.route('/api/finetuning_status', methods=['GET'])
-def check_finetuning_status():
-    """Get the current status of the finetuning process"""
+@token_required
+def check_finetuning_status(current_user):
+    """Protected endpoint to get the current status of the finetuning process"""
     global finetuning_status
     # Update feedback count on status check
     finetuning_status["feedback_count"] = count_feedback_items()
@@ -457,8 +814,16 @@ def check_finetuning_status():
     return jsonify(finetuning_status)
 
 @app.route('/api/run_finetuning', methods=['POST'])
-def run_finetuning():
-    """Start the finetuning process"""
+@token_required
+def run_finetuning(current_user):
+    """Protected endpoint to start the finetuning process"""
+    # Only allow users with 'admin' role to run finetuning
+    if current_user['role'] != 'admin':
+        return jsonify({
+            "success": False,
+            "message": "Insufficient permissions. Only administrators can run model refinement."
+        }), 403
+    
     global finetuning_process, finetuning_status
     
     # Log the request for debugging
@@ -537,8 +902,9 @@ def run_finetuning():
         })
 
 @app.route('/api/available_models', methods=['GET'])
-def get_available_models():
-    """API endpoint to get all available models"""
+@token_required
+def get_available_models(current_user):
+    """Protected API endpoint to get all available models"""
     # Get the default model
     default_model = "tb_chest_xray_attention_best.pt"  # Always include the default model
     
@@ -552,8 +918,16 @@ def get_available_models():
     })
 
 @app.route('/api/switch_model', methods=['POST'])
-def switch_model():
-    """Switch to using a specific model"""
+@token_required
+def switch_model(current_user):
+    """Protected endpoint to switch to using a specific model"""
+    # Only allow users with 'admin' role to switch models
+    if current_user['role'] != 'admin':
+        return jsonify({
+            "success": False,
+            "message": "Insufficient permissions. Only administrators can switch models."
+        }), 403
+    
     global attention_model
     
     # Check if finetuning is in progress
@@ -609,14 +983,83 @@ def switch_model():
         })
 
 @app.route('/api/current_model', methods=['GET'])
-def get_current_model():
-    """API endpoint to get the current model name"""
-    # We'll need a way to track the current model name
-    # This is just a placeholder and should be updated to actually track the model
-    model_name = "tb_chest_xray_attention_best.pt"  # Default name
+@token_required
+def get_current_model(current_user):
+    """Protected API endpoint to get the current model name"""
+    model_name = "tb_chest_xray_attention_best.pt"
     
-    # Return the model name
     return jsonify({"model_name": model_name})
 
+@app.route('/api/interpretability/compare', methods=['POST'])
+@token_required
+def compare_interpretability(current_user):
+    """Protected endpoint for comparing interpretability between models"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in request'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+        
+    try:
+        # Process image and get comparison results
+        result = process_image_with_comparison(file)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'Error comparing models: {str(e)}'}), 500
+
+@app.route('/api/model_status', methods=['GET'])
+@token_required
+def get_model_status(current_user):
+    """Protected endpoint to get the status of loaded models"""
+    # Check if models are loaded
+    original_loaded, finetuned_loaded = load_both_models()
+    
+    result = {
+        'original_model': {
+            'loaded': original_loaded,
+            'path': 'model/tb_chest_xray_attention_best.pt'
+        },
+        'finetuned_model': {
+            'loaded': finetuned_loaded,
+            'path': find_latest_refined_model() if finetuned_loaded else None
+        }
+    }
+    
+    return jsonify(result)
+
+# Public status endpoint - no authentication required
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    """Public API health check endpoint"""
+    return jsonify({
+        "status": "ok",
+        "message": "API is running",
+        "version": "1.0.0",
+        "authentication_required": True
+    })
+
 if __name__ == "__main__":
+    # Create a default admin user
+    admin_password = os.environ.get('ADMIN_PASSWORD', 'admin')
+    users['admin'] = {
+        'username': 'admin',
+        'password': generate_password_hash(admin_password),
+        'role': 'admin'
+    }
+    
+    # Create a default regular user
+    users['user'] = {
+        'username': 'user',
+        'password': generate_password_hash('password'),
+        'role': 'user'
+    }
+    
+    print("Default users created:")
+    print("- Admin user: username='admin', password='admin' (or set by ADMIN_PASSWORD env var)")
+    print("- Regular user: username='user', password='password'")
+    
+    # Preload models for interpretability comparison
+    load_both_models()
+    
     app.run(debug=True, host='0.0.0.0', port=8000)

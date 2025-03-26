@@ -733,7 +733,6 @@ def main():
                 # Save the model
                 torch.save(model.state_dict(), args.new_model_path)
                 
-                # Verify the file was created
                 if os.path.exists(args.new_model_path):
                     logger.info(f"Validation accuracy improved to {best_val_acc:.4f}. Model saved to {args.new_model_path}")
                 else:
@@ -741,7 +740,6 @@ def main():
             except Exception as e:
                 logger.error(f"Error saving model: {e}")
 
-    # Save final model regardless of validation improvement
     try:
         torch.save(model.state_dict(), args.new_model_path)
         logger.info(f"Final model saved to {args.new_model_path}")
@@ -750,9 +748,8 @@ def main():
 
     logger.info(f"Fine-tuning complete. Best validation accuracy: {best_val_acc:.4f}")
     
-    # Final verification
     if os.path.exists(args.new_model_path):
-        file_size = os.path.getsize(args.new_model_path) / 1024 / 1024  # Size in MB
+        file_size = os.path.getsize(args.new_model_path) / 1024 / 1024
         logger.info(f"Verified: Model file exists at {args.new_model_path} (Size: {file_size:.2f} MB)")
     else:
         logger.error(f"ERROR: Model file not found at {args.new_model_path} after training")

@@ -2,8 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
+import LoginForm from './components/LoginForm';
+import RegistrationForm from './components/RegistrationForm';
 
 function App() {
+  // Authentication state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authToken, setAuthToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [userRole, setUserRole] = useState('');
+  const [showLoginForm, setShowLoginForm] = useState(true);
+  const [showRegistrationForm, setShowRegistrationForm] = useState(false);
+  
   // State variables
   const [originalImage, setOriginalImage] = useState(null);
   const [gradCamImage, setGradCamImage] = useState(null);
@@ -32,6 +42,118 @@ function App() {
   const maskCanvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  // Set up axios interceptor for authentication
+  useEffect(() => {
+    // Load token from localStorage
+    const token = localStorage.getItem('authToken');
+    const storedUsername = localStorage.getItem('username');
+    const storedUserRole = localStorage.getItem('userRole');
+    
+    if (token) {
+      // Set the authentication state
+      setAuthToken(token);
+      setUsername(storedUsername || '');
+      setUserRole(storedUserRole || '');
+      
+      // Verify token is still valid
+      verifyToken(token);
+    }
+    
+    // Set up axios interceptor
+    axios.interceptors.request.use(
+      config => {
+        const token = localStorage.getItem('authToken');
+        if (token) {
+          config.headers['Authorization'] = `Bearer ${token}`;
+        }
+        return config;
+      },
+      error => {
+        return Promise.reject(error);
+      }
+    );
+    
+    // Handle 401 responses globally
+    axios.interceptors.response.use(
+      response => response,
+      error => {
+        if (error.response && error.response.status === 401) {
+          // Logout on 401 Unauthorized
+          handleLogout();
+        }
+        return Promise.reject(error);
+      }
+    );
+  }, []);
+  
+  // Verify token is valid
+  const verifyToken = async (token) => {
+    try {
+      const response = await axios.get('/api/auth/verify', {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      
+      if (response.data && response.data.authenticated) {
+        setIsAuthenticated(true);
+        setUsername(response.data.username);
+        setUserRole(response.data.role);
+        
+        // Update localStorage
+        localStorage.setItem('username', response.data.username);
+        localStorage.setItem('userRole', response.data.role);
+      } else {
+        // Token invalid, clear stored data
+        handleLogout();
+      }
+    } catch (error) {
+      // Token verification failed
+      console.error('Token verification failed:', error);
+      handleLogout();
+    }
+  };
+  
+  // Handle successful login
+  const handleLoginSuccess = (data) => {
+    setAuthToken(data.token);
+    setIsAuthenticated(true);
+    setUsername(data.username);
+    setUserRole(data.role);
+    
+    // Save to localStorage
+    localStorage.setItem('authToken', data.token);
+    localStorage.setItem('username', data.username);
+    localStorage.setItem('userRole', data.role);
+    
+    // Hide login/registration forms
+    setShowLoginForm(false);
+    setShowRegistrationForm(false);
+  };
+  
+  // Handle logout
+  const handleLogout = () => {
+    // Clear authentication state
+    setAuthToken('');
+    setIsAuthenticated(false);
+    setUsername('');
+    setUserRole('');
+    
+    // Clear localStorage
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('username');
+    localStorage.removeItem('userRole');
+    
+    // Show login form
+    setShowLoginForm(true);
+  };
+  
+  // Toggle between login and registration forms
+  const toggleAuthForms = () => {
+    setShowLoginForm(!showLoginForm);
+    setShowRegistrationForm(!showRegistrationForm);
+  };
+
   // Initialize canvas when gradCamImage changes
   useEffect(() => {
     if (gradCamImage) {
@@ -45,11 +167,13 @@ function App() {
 
   // Initial data load
   useEffect(() => {
-    // Only update feedback count on initial load
-    updateFeedbackCount();
-    fetchCurrentModel();
-    fetchAvailableModels();
-  }, []);
+    if (isAuthenticated) {
+      // Only update feedback count on initial load when authenticated
+      updateFeedbackCount();
+      fetchCurrentModel();
+      fetchAvailableModels();
+    }
+  }, [isAuthenticated]);
   
   // Auto-hide success message after 5 seconds
   useEffect(() => {
@@ -484,267 +608,302 @@ function App() {
 
   return (
     <div className="App">
-      {/* Header */}
+      {/* Header with Authentication */}
       <header className="header">
         <div className="header-container">
           <h1 className="header-title">Clinician Guided Grad-CAM</h1>
+          {isAuthenticated && (
+            <div className="user-info">
+              <span className="username">
+                {username} ({userRole})
+              </span>
+              <button 
+                className="btn-secondary logout-btn" 
+                onClick={handleLogout}
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </header>
       
-      <div className="main-container">
-        {/* File Upload Card */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">Upload X-ray Image</h2>
-          </div>
-          <div className="file-upload">
-            <p>Select a chest X-ray image to analyze</p>
-            <input 
-              type="file" 
-              accept="image/jpeg,image/png,image/bmp,image/tiff" 
-              onChange={handleFileUpload}
-              disabled={isLoading}
-              ref={fileInputRef}
+      {/* Authentication Forms */}
+      {!isAuthenticated && (
+        <div className="auth-container">
+          {showLoginForm && (
+            <LoginForm 
+              onLoginSuccess={handleLoginSuccess} 
+              onSwitchToRegister={toggleAuthForms}
             />
-            <button 
-              className="file-upload-btn"
-              onClick={() => fileInputRef.current.click()}
-              disabled={isLoading}
-            >
-              {isLoading ? 'Processing...' : 'Select Image'}
-            </button>
-          </div>
+          )}
+          
+          {showRegistrationForm && (
+            <RegistrationForm 
+              onRegistrationSuccess={() => setShowLoginForm(true)} 
+              onSwitchToLogin={toggleAuthForms}
+            />
+          )}
         </div>
-        
-        {/* Success Message */}
-        {successMessage && (
-          <div className="success-status">
-            <h4>✓ Success!</h4>
-            <p>{successMessage}</p>
-          </div>
-        )}
-        
-        {/* Images Section */}
-        {originalImage && (
+      )}
+      
+      {/* Main Application - only shown when authenticated */}
+      {isAuthenticated && (
+        <div className="main-container">
+          {/* File Upload Card */}
           <div className="card">
             <div className="card-header">
-              <h2 className="card-title">Analysis Results</h2>
+              <h2 className="card-title">Upload X-ray Image</h2>
             </div>
-            
-            {/* TB Probability Display */}
-            <div className="result">
-              <div className="probability-display">
-                <span className="probability-label">Tuberculosis Probability:</span>
-                <span 
-                  className={`probability-value ${getProbabilityClass(tbProbability)}`}
-                  style={{ color: getProbabilityColor(tbProbability) }}
-                >
-                  {formatProbability(tbProbability)}%
-                </span>
-              </div>
-            </div>
-            
-            {/* Images */}
-            <div className="image-section">
-              {/* Original image */}
-              <div className="img-container">
-                <div className="img-header">Original X-ray</div>
-                <div className="img-content">
-                  <img 
-                    src={`data:image/jpeg;base64,${originalImage}`} 
-                    alt="Original X-ray" 
-                  />
-                </div>
-              </div>
-              
-              {/* Grad-CAM overlay */}
-              <div className="img-container">
-                <div className="img-header">
-                  Grad-CAM Analysis
-                  {gradCamImage && (
-                    <button
-                      className="btn-secondary"
-                      style={{padding: '6px 12px', fontSize: '0.9rem'}}
-                      onClick={toggleDraw}
-                    >
-                      {isCanvasVisible ? 'Hide Drawing Tool' : 'Draw Annotations'}
-                    </button>
-                  )}
-                </div>
-                <div className="img-content">
-                  {gradCamImage && (
-                    <>
-                      <img 
-                        src={`data:image/jpeg;base64,${gradCamImage}`} 
-                        alt="Grad-CAM Overlay" 
-                      />
-                      <canvas 
-                        ref={displayCanvasRef}
-                        id="displayCanvas"
-                        style={{ display: isCanvasVisible ? 'block' : 'none' }}
-                        onMouseDown={handleMouseDown}
-                        onMouseMove={handleMouseMove}
-                        onMouseUp={handleMouseUp}
-                        onMouseLeave={handleMouseLeave}
-                      ></canvas>
-                      <canvas 
-                        ref={maskCanvasRef}
-                        id="maskCanvas"
-                        style={{ display: 'none' }}
-                      ></canvas>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-            
-            {/* Moved Label Selection above Drawing Tools for better visibility */}
-            {gradCamImage && isCanvasVisible && (
-              <div className="label-section" style={{ marginBottom: '25px' }}>
-                <h3 className="label-title">Select Diagnosis (Required):</h3>
-                <div className="label-row">
-                  <label className="radio-label">
-                    <input 
-                      type="radio" 
-                      name="tb_label" 
-                      value="TB"
-                      checked={tbLabel === 'TB'}
-                      onChange={() => setTbLabel('TB')}
-                    />
-                    TB Present
-                  </label>
-                  <label className="radio-label">
-                    <input 
-                      type="radio" 
-                      name="tb_label" 
-                      value="Normal"
-                      checked={tbLabel === 'Normal'}
-                      onChange={() => setTbLabel('Normal')}
-                    />
-                    Normal
-                  </label>
-                </div>
-              </div>
-            )}
-            
-            {/* Drawing Tools */}
-            {gradCamImage && isCanvasVisible && (
-              <div className="drawing-tools">
-                <button 
-                  className="btn-secondary" 
-                  onClick={undoShape} 
-                  disabled={shapes.length === 0}
-                >
-                  Undo Last Shape
-                </button>
-                <button 
-                  className="btn-secondary" 
-                  onClick={resetShapes} 
-                  disabled={shapes.length === 0}
-                >
-                  Clear All
-                </button>
-                <button 
-                  className="btn-primary" 
-                  onClick={submitMask} 
-                  disabled={shapes.length === 0 || tbLabel === null}
-                  title={tbLabel === null ? "Please select a diagnosis before submitting" : ""}
-                >
-                  Submit Annotations
-                </button>
-              </div>
-            )}
-            
-            {/* Drawing Instructions */}
-            {gradCamImage && isCanvasVisible && (
-              <div className="text-muted" style={{ textAlign: 'center', marginTop: '15px', fontStyle: 'italic' }}>
-                Draw shapes around areas of interest in the image. Click and drag to create shapes.
-              </div>
-            )}
-          </div>
-        )}
-        
-        {/* Model Refinement Section */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">Model Management</h2>
-          </div>
-          
-          <div className="model-info">
-            <div className="model-info-item">
-              <div className="model-info-label">Current Model</div>
-              <div className="model-info-value">{currentModel}</div>
-            </div>
-            <div className="model-info-item">
-              <div className="model-info-label">Annotations Collected</div>
-              <div className="model-info-value">{feedbackCount}</div>
-            </div>
-          </div>
-          
-          <div className="model-actions">
-            <button 
-              className="btn-primary" 
-              onClick={runFinetuning} 
-              disabled={isRefining || feedbackCount === 0}
-              title={feedbackCount === 0 ? "Need feedback data to refine model" : ""}
-            >
-              Run Offline Refinement
-            </button>
-            
-            <div className="model-selector">
-              <select 
-                value={selectedModel}
-                onChange={handleModelSelectionChange}
-                disabled={isRefining || availableModels.length === 0}
-                className="model-dropdown"
-              >
-                {availableModels.map((model, index) => (
-                  <option key={index} value={model}>
-                    {model === 'tb_chest_xray_attention_best.pt' ? 'Default Model' : model}
-                  </option>
-                ))}
-              </select>
-              
+            <div className="file-upload">
+              <p>Select a chest X-ray image to analyze</p>
+              <input 
+                type="file" 
+                accept="image/jpeg,image/png,image/bmp,image/tiff" 
+                onChange={handleFileUpload}
+                disabled={isLoading}
+                ref={fileInputRef}
+              />
               <button 
-                className="btn-secondary" 
-                onClick={switchModel}
-                disabled={isRefining || selectedModel === currentModel}
-                title={selectedModel === currentModel ? "Already using this model" : ""}
+                className="file-upload-btn"
+                onClick={() => fileInputRef.current.click()}
+                disabled={isLoading}
               >
-                Switch Model
+                {isLoading ? 'Processing...' : 'Select Image'}
               </button>
             </div>
           </div>
           
-          {/* Progress bar for finetuning */}
-          {(isRefining || finetuningStatus) && (
-            <div className="refinement-status">
-              {isRefining && (
-                <div className="progress-container">
-                  <div className="progress-label">Refinement progress:</div>
-                  <div className="progress-bar-container">
-                    <div 
-                      className="progress-bar" 
-                      style={{ width: `${finetuningProgress}%` }}
-                    ></div>
-                  </div>
-                  <div className="progress-text">{Math.round(finetuningProgress)}%</div>
-                </div>
-              )}
-              <div className="status-message">{finetuningStatus}</div>
+          {/* Success Message */}
+          {successMessage && (
+            <div className="success-status">
+              <h4>✓ Success!</h4>
+              <p>{successMessage}</p>
             </div>
           )}
           
-          <div className="help-text">
-            <p>
-              <strong>Offline Refinement</strong> - Refine the model using clinician's feedback data
-            </p>
-            <p>
-              <strong>Switch Model</strong> - Use the latest refined model for predictions
-            </p>
+          {/* Images Section */}
+          {originalImage && (
+            <div className="card">
+              <div className="card-header">
+                <h2 className="card-title">Analysis Results</h2>
+              </div>
+              
+              {/* TB Probability Display */}
+              <div className="result">
+                <div className="probability-display">
+                  <span className="probability-label">Tuberculosis Probability:</span>
+                  <span 
+                    className={`probability-value ${getProbabilityClass(tbProbability)}`}
+                    style={{ color: getProbabilityColor(tbProbability) }}
+                  >
+                    {formatProbability(tbProbability)}%
+                  </span>
+                </div>
+              </div>
+              
+              {/* Images */}
+              <div className="image-section">
+                {/* Original image */}
+                <div className="img-container">
+                  <div className="img-header">Original X-ray</div>
+                  <div className="img-content">
+                    <img 
+                      src={`data:image/jpeg;base64,${originalImage}`} 
+                      alt="Original X-ray" 
+                    />
+                  </div>
+                </div>
+                
+                {/* Grad-CAM overlay */}
+                <div className="img-container">
+                  <div className="img-header">
+                    Grad-CAM Analysis
+                    {gradCamImage && (
+                      <button
+                        className="btn-secondary"
+                        style={{padding: '6px 12px', fontSize: '0.9rem'}}
+                        onClick={toggleDraw}
+                      >
+                        {isCanvasVisible ? 'Hide Drawing Tool' : 'Draw Annotations'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="img-content">
+                    {gradCamImage && (
+                      <>
+                        <img 
+                          src={`data:image/jpeg;base64,${gradCamImage}`} 
+                          alt="Grad-CAM Overlay" 
+                        />
+                        <canvas 
+                          ref={displayCanvasRef}
+                          id="displayCanvas"
+                          style={{ display: isCanvasVisible ? 'block' : 'none' }}
+                          onMouseDown={handleMouseDown}
+                          onMouseMove={handleMouseMove}
+                          onMouseUp={handleMouseUp}
+                          onMouseLeave={handleMouseLeave}
+                        ></canvas>
+                        <canvas 
+                          ref={maskCanvasRef}
+                          id="maskCanvas"
+                          style={{ display: 'none' }}
+                        ></canvas>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
+              {/* Moved Label Selection above Drawing Tools for better visibility */}
+              {gradCamImage && isCanvasVisible && (
+                <div className="label-section" style={{ marginBottom: '25px' }}>
+                  <h3 className="label-title">Select Diagnosis (Required):</h3>
+                  <div className="label-row">
+                    <label className="radio-label">
+                      <input 
+                        type="radio" 
+                        name="tb_label" 
+                        value="TB"
+                        checked={tbLabel === 'TB'}
+                        onChange={() => setTbLabel('TB')}
+                      />
+                      TB Present
+                    </label>
+                    <label className="radio-label">
+                      <input 
+                        type="radio" 
+                        name="tb_label" 
+                        value="Normal"
+                        checked={tbLabel === 'Normal'}
+                        onChange={() => setTbLabel('Normal')}
+                      />
+                      Normal
+                    </label>
+                  </div>
+                </div>
+              )}
+              
+              {/* Drawing Tools */}
+              {gradCamImage && isCanvasVisible && (
+                <div className="drawing-tools">
+                  <button 
+                    className="btn-secondary" 
+                    onClick={undoShape} 
+                    disabled={shapes.length === 0}
+                  >
+                    Undo Last Shape
+                  </button>
+                  <button 
+                    className="btn-secondary" 
+                    onClick={resetShapes} 
+                    disabled={shapes.length === 0}
+                  >
+                    Clear All
+                  </button>
+                  <button 
+                    className="btn-primary" 
+                    onClick={submitMask} 
+                    disabled={shapes.length === 0 || tbLabel === null}
+                    title={tbLabel === null ? "Please select a diagnosis before submitting" : ""}
+                  >
+                    Submit Annotations
+                  </button>
+                </div>
+              )}
+              
+              {/* Drawing Instructions */}
+              {gradCamImage && isCanvasVisible && (
+                <div className="text-muted" style={{ textAlign: 'center', marginTop: '15px', fontStyle: 'italic' }}>
+                  Draw shapes around areas of interest in the image. Click and drag to create shapes.
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* Model Refinement Section */}
+          <div className="card">
+            <div className="card-header">
+              <h2 className="card-title">Model Management</h2>
+            </div>
+            
+            <div className="model-info">
+              <div className="model-info-item">
+                <div className="model-info-label">Current Model</div>
+                <div className="model-info-value">{currentModel}</div>
+              </div>
+              <div className="model-info-item">
+                <div className="model-info-label">Annotations Collected</div>
+                <div className="model-info-value">{feedbackCount}</div>
+              </div>
+            </div>
+            
+            <div className="model-actions">
+              <button 
+                className="btn-primary" 
+                onClick={runFinetuning} 
+                disabled={isRefining || feedbackCount === 0}
+                title={feedbackCount === 0 ? "Need feedback data to refine model" : ""}
+              >
+                Run Offline Refinement
+              </button>
+              
+              <div className="model-selector">
+                <select 
+                  value={selectedModel}
+                  onChange={handleModelSelectionChange}
+                  disabled={isRefining || availableModels.length === 0}
+                  className="model-dropdown"
+                >
+                  {availableModels.map((model, index) => (
+                    <option key={index} value={model}>
+                      {model === 'tb_chest_xray_attention_best.pt' ? 'Default Model' : model}
+                    </option>
+                  ))}
+                </select>
+                
+                <button 
+                  className="btn-secondary" 
+                  onClick={switchModel}
+                  disabled={isRefining || selectedModel === currentModel}
+                  title={selectedModel === currentModel ? "Already using this model" : ""}
+                >
+                  Switch Model
+                </button>
+              </div>
+            </div>
+            
+            {/* Progress bar for finetuning */}
+            {(isRefining || finetuningStatus) && (
+              <div className="refinement-status">
+                {isRefining && (
+                  <div className="progress-container">
+                    <div className="progress-label">Refinement progress:</div>
+                    <div className="progress-bar-container">
+                      <div 
+                        className="progress-bar" 
+                        style={{ width: `${finetuningProgress}%` }}
+                      ></div>
+                    </div>
+                    <div className="progress-text">{Math.round(finetuningProgress)}%</div>
+                  </div>
+                )}
+                <div className="status-message">{finetuningStatus}</div>
+              </div>
+            )}
+            
+            <div className="help-text">
+              <p>
+                <strong>Offline Refinement</strong> - Refine the model using clinician's feedback data
+              </p>
+              <p>
+                <strong>Switch Model</strong> - Use the latest refined model for predictions
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      )}
       
       {/* Loading overlay */}
       {isLoading && (
