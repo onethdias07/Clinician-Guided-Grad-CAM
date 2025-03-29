@@ -884,8 +884,9 @@ button:disabled {
 
 /* Auth Form Styling */
 .auth-form-container {
+
   max-width: 400px;
-  margin: 0 auto;
+  margin: 55px auto 0;
   padding: 2rem;
   background: white;
   border-radius: 8px;

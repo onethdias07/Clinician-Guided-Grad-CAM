@@ -5,57 +5,56 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [registrationError, setRegistrationError] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
   
-  const handleSubmit = async (e) => {
+  const handleRegistrationSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+    setRegistrationError('');
     
-    // Validation
     if (!username || !password || !confirmPassword) {
-      setError('Please fill all fields');
+      setRegistrationError('Please fill all fields');
       return;
     }
     
     if (password !== confirmPassword) {
-      setError('Passwords do not match');
+      setRegistrationError('Passwords do not match');
       return;
     }
     
     if (password.length < 6) {
-      setError('Password must be at least 6 characters long');
+      setRegistrationError('Password must be at least 6 characters long');
       return;
     }
     
-    setLoading(true);
+    setIsRegistering(true);
     
     try {
       const response = await axios.post('/api/auth/register', {
         username,
         password,
-        role: 'user'  // Default role for new registrations
+        role: 'user'
       });
       
       if (response.data && response.status === 201) {
         alert('Registration successful! You can now log in.');
         onRegistrationSuccess();
       } else {
-        setError('Registration failed. Please try again.');
+        setRegistrationError('Registration failed. Please try again.');
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Registration failed. Please try again.');
+      setRegistrationError(err.response?.data?.message || 'Registration failed. Please try again.');
     } finally {
-      setLoading(false);
+      setIsRegistering(false);
     }
   };
   
   return (
     <div className="auth-form-container">
       <h2 className="auth-title">Create Account</h2>
-      {error && <div className="error-message">{error}</div>}
+      {registrationError && <div className="error-message">{registrationError}</div>}
       
-      <form onSubmit={handleSubmit} className="auth-form">
+      <form onSubmit={handleRegistrationSubmit} className="auth-form">
         <div className="form-group">
           <label htmlFor="reg-username">Username</label>
           <div className="input-with-icon">
@@ -65,7 +64,7 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
               id="reg-username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              disabled={loading}
+              disabled={isRegistering}
               required
               placeholder="Choose a username"
               className="enhanced-input"
@@ -82,7 +81,7 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
               id="reg-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
+              disabled={isRegistering}
               required
               placeholder="Create a password"
               className="enhanced-input"
@@ -99,7 +98,7 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
               id="confirm-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              disabled={loading}
+              disabled={isRegistering}
               required
               placeholder="Confirm your password"
               className="enhanced-input"
@@ -110,9 +109,9 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
         <button 
           type="submit" 
           className="btn-primary auth-button" 
-          disabled={loading}
+          disabled={isRegistering}
         >
-          {loading ? 'Registering...' : 'Register'}
+          {isRegistering ? 'Registering...' : 'Register'}
         </button>
       </form>
       
@@ -121,7 +120,7 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
         <button 
           className="link-button" 
           onClick={onSwitchToLogin}
-          disabled={loading}
+          disabled={isRegistering}
         >
           Login
         </button>

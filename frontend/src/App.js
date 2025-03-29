@@ -6,7 +6,6 @@ import LoginForm from './components/LoginForm';
 import RegistrationForm from './components/RegistrationForm';
 
 function App() {
-  // Authentication state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authToken, setAuthToken] = useState('');
   const [username, setUsername] = useState('');
@@ -14,52 +13,43 @@ function App() {
   const [showLoginForm, setShowLoginForm] = useState(true);
   const [showRegistrationForm, setShowRegistrationForm] = useState(false);
   
-  // State variables
-  const [originalImage, setOriginalImage] = useState(null);
+  const [originalXrayImage, setOriginalXrayImage] = useState(null);
   const [gradCamImage, setGradCamImage] = useState(null);
-  const [tbProbability, setTbProbability] = useState('--');
-  const [tbLabel, setTbLabel] = useState(null); // Changed initial value to null for validation
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [shapes, setShapes] = useState([]);
-  const [currentShape, setCurrentShape] = useState([]);
-  const [isCanvasVisible, setIsCanvasVisible] = useState(false);
+  const [tuberculosisProbability, setTuberculosisProbability] = useState('--');
+  const [tuberculosisDiagnosis, setTuberculosisDiagnosis] = useState(null);
+  const [isDrawingAnnotation, setIsDrawingAnnotation] = useState(false);
+  const [annotationShapes, setAnnotationShapes] = useState([]);
+  const [currentAnnotationShape, setCurrentAnnotationShape] = useState([]);
+  const [isAnnotationToolVisible, setIsAnnotationToolVisible] = useState(false);
   const [currentModel, setCurrentModel] = useState('tb_chest_xray_attention_best.pt');
   const [feedbackCount, setFeedbackCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
-  const [successMessage, setSuccessMessage] = useState(null);
+  const [feedbackSubmissionSuccess, setFeedbackSubmissionSuccess] = useState(null);
   
-  // Add finetuning-related state
-  const [isRefining, setIsRefining] = useState(false);
-  const [finetuningProgress, setFinetuningProgress] = useState(0);
-  const [finetuningStatus, setFinetuningStatus] = useState('');
+  const [isRefiningModel, setIsRefiningModel] = useState(false);
+  const [modelRefinementProgress, setModelRefinementProgress] = useState(0);
+  const [modelRefinementStatus, setModelRefinementStatus] = useState('');
   const [statusCheckInterval, setStatusCheckInterval] = useState(null);
   
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('tb_chest_xray_attention_best.pt');
 
-  // Refs for canvas elements
   const displayCanvasRef = useRef(null);
   const maskCanvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Set up axios interceptor for authentication
   useEffect(() => {
-    // Load token from localStorage
     const token = localStorage.getItem('authToken');
     const storedUsername = localStorage.getItem('username');
     const storedUserRole = localStorage.getItem('userRole');
     
     if (token) {
-      // Set the authentication state
       setAuthToken(token);
       setUsername(storedUsername || '');
       setUserRole(storedUserRole || '');
-      
-      // Verify token is still valid
       verifyToken(token);
     }
     
-    // Set up axios interceptor
     axios.interceptors.request.use(
       config => {
         const token = localStorage.getItem('authToken');
@@ -73,12 +63,10 @@ function App() {
       }
     );
     
-    // Handle 401 responses globally
     axios.interceptors.response.use(
       response => response,
       error => {
         if (error.response && error.response.status === 401) {
-          // Logout on 401 Unauthorized
           handleLogout();
         }
         return Promise.reject(error);
@@ -86,7 +74,6 @@ function App() {
     );
   }, []);
   
-  // Verify token is valid
   const verifyToken = async (token) => {
     try {
       const response = await axios.get('/api/auth/verify', {
@@ -99,94 +86,73 @@ function App() {
         setIsAuthenticated(true);
         setUsername(response.data.username);
         setUserRole(response.data.role);
-        
-        // Update localStorage
         localStorage.setItem('username', response.data.username);
         localStorage.setItem('userRole', response.data.role);
       } else {
-        // Token invalid, clear stored data
         handleLogout();
       }
     } catch (error) {
-      // Token verification failed
       console.error('Token verification failed:', error);
       handleLogout();
     }
   };
   
-  // Handle successful login
   const handleLoginSuccess = (data) => {
     setAuthToken(data.token);
     setIsAuthenticated(true);
     setUsername(data.username);
     setUserRole(data.role);
-    
-    // Save to localStorage
     localStorage.setItem('authToken', data.token);
     localStorage.setItem('username', data.username);
     localStorage.setItem('userRole', data.role);
-    
-    // Hide login/registration forms
     setShowLoginForm(false);
     setShowRegistrationForm(false);
   };
   
-  // Handle logout
   const handleLogout = () => {
-    // Clear authentication state
     setAuthToken('');
     setIsAuthenticated(false);
     setUsername('');
     setUserRole('');
-    
-    // Clear localStorage
     localStorage.removeItem('authToken');
     localStorage.removeItem('username');
     localStorage.removeItem('userRole');
-    
-    // Show login form
     setShowLoginForm(true);
   };
   
-  // Toggle between login and registration forms
-  const toggleAuthForms = () => {
+  const toggleAuthenticationView = () => {
     setShowLoginForm(!showLoginForm);
     setShowRegistrationForm(!showRegistrationForm);
   };
 
-  // Initialize canvas when gradCamImage changes
   useEffect(() => {
     if (gradCamImage) {
       const img = new Image();
       img.src = `data:image/jpeg;base64,${gradCamImage}`;
       img.onload = () => {
-        setupCanvas(img.width, img.height);
+        setupAnnotationCanvas(img.width, img.height);
       };
     }
   }, [gradCamImage]);
 
-  // Initial data load
   useEffect(() => {
     if (isAuthenticated) {
-      // Only update feedback count on initial load when authenticated
       updateFeedbackCount();
       fetchCurrentModel();
       fetchAvailableModels();
     }
   }, [isAuthenticated]);
   
-  // Auto-hide success message after 5 seconds
   useEffect(() => {
-    if (successMessage) {
+    if (feedbackSubmissionSuccess) {
       const timer = setTimeout(() => {
-        setSuccessMessage(null);
+        setFeedbackSubmissionSuccess(null);
       }, 5000);
       
       return () => clearTimeout(timer);
     }
-  }, [successMessage]);
+  }, [feedbackSubmissionSuccess]);
 
-  // Clean up interval on unmount
   useEffect(() => {
     return () => {
       if (statusCheckInterval) {
@@ -195,12 +161,10 @@ function App() {
     };
   }, [statusCheckInterval]);
 
-  // Handle file upload
-  const handleFileUpload = async (e) => {
+  const handleXrayImageUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     
-    // Add file type validation
     const validTypes = ['image/jpeg', 'image/png', 'image/bmp', 'image/tiff'];
     if (!validTypes.includes(file.type)) {
       alert('Please upload a valid image file (JPEG, PNG, BMP, or TIFF)');
@@ -219,22 +183,21 @@ function App() {
         }
       });
       
-      setOriginalImage(response.data.original_image);
-      setGradCamImage(response.data.grad_cam_image);
-      setTbProbability(response.data.tb_probability);
-      setIsLoading(false);
-      setTbLabel(null); // Reset the label when uploading a new image
+      const { original_image, grad_cam_image, tb_probability } = response.data;
       
-      // Clear any previous success message
-      setSuccessMessage(null);
+      setOriginalXrayImage(original_image);
+      setGradCamImage(grad_cam_image);
+      setTuberculosisProbability(tb_probability);
+      setTuberculosisDiagnosis(null);
+      setFeedbackSubmissionSuccess(null);
     } catch (error) {
-      setIsLoading(false);
       alert('Error processing image. Please try a different file or try again later.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // Canvas setup
-  const setupCanvas = (width, height) => {
+  const setupAnnotationCanvas = (width, height) => {
     if (!displayCanvasRef.current || !maskCanvasRef.current) return;
 
     const displayCanvas = displayCanvasRef.current;
@@ -250,81 +213,74 @@ function App() {
     displayCanvas.style.width = '100%';
     displayCanvas.style.height = 'auto';
 
-    // Reset mask canvas
     maskCtx.fillStyle = 'black';
     maskCtx.fillRect(0, 0, width, height);
 
-    // Reset display canvas
     displayCtx.clearRect(0, 0, width, height);
     displayCtx.lineWidth = 2;
     displayCtx.strokeStyle = 'red';
     displayCtx.lineCap = 'round';
 
-    setShapes([]);
-    setCurrentShape([]);
-    setIsDrawing(false);
+    setAnnotationShapes([]);
+    setCurrentAnnotationShape([]);
+    setIsDrawingAnnotation(false);
   };
 
-  // Drawing functions
-  const toggleDraw = () => {
+  const toggleAnnotationTool = () => {
     if (!displayCanvasRef.current) return;
     
-    const newVisibility = !isCanvasVisible;
-    setIsCanvasVisible(newVisibility);
+    const newVisibility = !isAnnotationToolVisible;
+    setIsAnnotationToolVisible(newVisibility);
     
-    // Reset shapes when hiding the canvas
     if (!newVisibility) {
-      resetShapes();
+      resetAnnotations();
     }
   };
 
   const handleMouseDown = (e) => {
-    setIsDrawing(true);
-    setCurrentShape([]);
-    addPoint(e);
+    setIsDrawingAnnotation(true);
+    setCurrentAnnotationShape([]);
+    addAnnotationPoint(e);
   };
 
   const handleMouseMove = (e) => {
     const rect = displayCanvasRef.current.getBoundingClientRect();
     
-    if (!isDrawing) return;
-    addPoint(e);
-    redrawDisplay();
+    if (!isDrawingAnnotation) return;
+    addAnnotationPoint(e);
+    redrawDisplayCanvas();
   };
 
   const handleMouseUp = () => {
-    if (isDrawing) {
-      setIsDrawing(false);
-      finalizeShape();
+    if (isDrawingAnnotation) {
+      setIsDrawingAnnotation(false);
+      finalizeAnnotationShape();
     }
   };
 
   const handleMouseLeave = () => {
-    if (isDrawing) {
-      setIsDrawing(false);
-      finalizeShape();
+    if (isDrawingAnnotation) {
+      setIsDrawingAnnotation(false);
+      finalizeAnnotationShape();
     }
   };
 
-  // Fix for correct mouse coordinates
-  const addPoint = (evt) => {
+  const addAnnotationPoint = (evt) => {
     if (!displayCanvasRef.current) return;
     
     const canvas = displayCanvasRef.current;
     const rect = canvas.getBoundingClientRect();
     
-    // Calculate the scale factor between actual canvas dimensions and displayed size
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
-    // Get mouse position relative to canvas, then scale to actual canvas coordinates
     const x = (evt.clientX - rect.left) * scaleX;
     const y = (evt.clientY - rect.top) * scaleY;
     
-    setCurrentShape(prev => [...prev, { x, y }]);
+    setCurrentAnnotationShape(prev => [...prev, { x, y }]);
   };
 
-  const redrawDisplay = () => {
+  const redrawDisplayCanvas = () => {
     const displayCanvas = displayCanvasRef.current;
     if (!displayCanvas) return;
     
@@ -332,10 +288,10 @@ function App() {
     
     displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
     
-    shapes.forEach(shape => drawPolyline(shape, displayCtx));
+    annotationShapes.forEach(shape => drawPolyline(shape, displayCtx));
     
-    if (currentShape.length > 1) {
-      drawPolyline(currentShape, displayCtx);
+    if (currentAnnotationShape.length > 1) {
+      drawPolyline(currentAnnotationShape, displayCtx);
     }
   };
 
@@ -350,19 +306,19 @@ function App() {
     ctx.stroke();
   };
 
-  const finalizeShape = () => {
-    if (currentShape.length < 2) {
-      setCurrentShape([]);
+  const finalizeAnnotationShape = () => {
+    if (currentAnnotationShape.length < 2) {
+      setCurrentAnnotationShape([]);
       return;
     }
     
-    setShapes(prevShapes => [...prevShapes, [...currentShape]]);
-    fillShapeOnMask(currentShape);
-    redrawDisplay();
-    setCurrentShape([]);
+    setAnnotationShapes(prevShapes => [...prevShapes, [...currentAnnotationShape]]);
+    fillAnnotationShapeOnMask(currentAnnotationShape);
+    redrawDisplayCanvas();
+    setCurrentAnnotationShape([]);
   };
 
-  const fillShapeOnMask = (shapePoints) => {
+  const fillAnnotationShapeOnMask = (shapePoints) => {
     if (!shapePoints || shapePoints.length < 3 || !maskCanvasRef.current) return;
     
     const maskCanvas = maskCanvasRef.current;
@@ -380,22 +336,22 @@ function App() {
     maskCtx.fill();
   };
 
-  const undoShape = () => {
-    if (shapes.length === 0) return;
+  const undoAnnotationShape = () => {
+    if (annotationShapes.length === 0) return;
     
-    const newShapes = [...shapes];
+    const newShapes = [...annotationShapes];
     newShapes.pop();
-    setShapes(newShapes);
+    setAnnotationShapes(newShapes);
     rebuildMaskCanvas();
-    redrawDisplay();
+    redrawDisplayCanvas();
   };
 
-  const resetShapes = () => {
+  const resetAnnotations = () => {
     if (!maskCanvasRef.current || !displayCanvasRef.current) return;
     
-    setShapes([]);
-    setCurrentShape([]);
-    setIsDrawing(false);
+    setAnnotationShapes([]);
+    setCurrentAnnotationShape([]);
+    setIsDrawingAnnotation(false);
     
     const maskCanvas = maskCanvasRef.current;
     const maskCtx = maskCanvas.getContext('2d');
@@ -416,23 +372,21 @@ function App() {
     maskCtx.fillStyle = 'black';
     maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
     
-    shapes.forEach(s => fillShapeOnMask(s));
+    annotationShapes.forEach(s => fillAnnotationShapeOnMask(s));
   };
 
-  // Submit mask function with improved feedback
-  const submitMask = async () => {
-    if (shapes.length === 0) {
+  const submitAnnotationMask = async () => {
+    if (annotationShapes.length === 0) {
       alert('No shapes drawn to submit. Please draw on the image to indicate areas of interest.');
       return;
     }
     
-    if (!originalImage) {
+    if (!originalXrayImage) {
       alert('No original image data found.');
       return;
     }
     
-    // Add validation for diagnosis selection
-    if (tbLabel === null) {
+    if (tuberculosisDiagnosis === null) {
       alert('Please select a diagnosis (TB Present or Normal) before submitting.');
       return;
     }
@@ -443,29 +397,24 @@ function App() {
     const base64Mask = maskDataURL.split(',')[1];
     
     try {
-      const response = await axios.post('/api/feedback', {
-        image: originalImage,
+      await axios.post('/api/feedback', {
+        image: originalXrayImage,
         mask: base64Mask,
-        label: tbLabel
+        label: tuberculosisDiagnosis
       });
       
-      setIsLoading(false);
-      setSuccessMessage('Thank you! Your annotations have been successfully submitted.');
-      
-      // Reset drawing state
-      resetShapes();
-      setIsCanvasVisible(false);
-      
-      // Update feedback count
+      setFeedbackSubmissionSuccess('Thank you! Your annotations have been successfully submitted.');
+      resetAnnotations();
+      setIsAnnotationToolVisible(false);
       updateFeedbackCount();
       
     } catch (error) {
-      setIsLoading(false);
       alert('Error submitting annotations: ' + error.message);
+    } finally {
+      setIsLoading(false);
     }
   };
   
-  // Model refinement functions
   const fetchCurrentModel = async () => {
     try {
       const response = await axios.get('/api/current_model');
@@ -486,75 +435,74 @@ function App() {
     }
   };
   
-  const runFinetuning = async () => {
+  const runModelRefinement = async () => {
     try {
-      setIsRefining(true);
-      setFinetuningProgress(0);
-      setFinetuningStatus('Starting refinement process...');
+      setIsRefiningModel(true);
+      setModelRefinementProgress(0);
+      setModelRefinementStatus('Starting refinement process...');
       
       const response = await axios.post('/api/run_finetuning');
       
       if (response.data && response.data.success) {
-        setFinetuningStatus(response.data.message);
+        setModelRefinementStatus(response.data.message);
         
-        // Clear any existing interval
         if (statusCheckInterval) {
           clearInterval(statusCheckInterval);
         }
         
-        // Start checking status
-        const intervalId = setInterval(checkFinetuningStatus, 5000);
+        const intervalId = setInterval(checkModelRefinementStatus, 5000);
         setStatusCheckInterval(intervalId);
       } else {
-        setFinetuningStatus(`Error: ${response.data?.message || 'Unknown error'}`);
-        setIsRefining(false);
+        setModelRefinementStatus(`Error: ${response.data?.message || 'Unknown error'}`);
+        setIsRefiningModel(false);
       }
     } catch (error) {
-      setFinetuningStatus(`Error starting refinement: ${error.message}`);
-      setIsRefining(false);
+      setModelRefinementStatus(`Error starting refinement: ${error.message}`);
+      setIsRefiningModel(false);
     }
   };
   
   const switchModel = async () => {
     try {
-      setFinetuningStatus('Switching model...');
+      setModelRefinementStatus('Switching model...');
       
       const response = await axios.post('/api/switch_model', {
         model_name: selectedModel
       });
       
       if (response.data && response.data.success) {
-        setFinetuningStatus(response.data.message);
+        setModelRefinementStatus(response.data.message);
         setCurrentModel(response.data.model_name);
       } else {
-        setFinetuningStatus(`Error: ${response.data?.message || 'Unknown error'}`);
+        setModelRefinementStatus(`Error: ${response.data?.message || 'Unknown error'}`);
       }
     } catch (error) {
-      setFinetuningStatus(`Error switching model: ${error.message}`);
+      setModelRefinementStatus(`Error switching model: ${error.message}`);
     }
   };
   
-  const checkFinetuningStatus = async () => {
+  const checkModelRefinementStatus = async () => {
     try {
       const response = await axios.get('/api/finetuning_status');
       
-      setFinetuningStatus(response.data.message);
+      setModelRefinementStatus(response.data.message);
       
-      if (response.data.current_epoch && response.data.total_epochs) {
-        const progress = (response.data.current_epoch / response.data.total_epochs) * 100;
-        setFinetuningProgress(progress);
+      const { current_epoch, total_epochs, running } = response.data;
+      
+      if (current_epoch && total_epochs) {
+        const progress = (current_epoch / total_epochs) * 100;
+        setModelRefinementProgress(progress);
       }
       
-      if (!response.data.running) {
-        setIsRefining(false);
-        setFinetuningProgress(100);
+      if (!running) {
+        setIsRefiningModel(false);
+        setModelRefinementProgress(100);
         
         if (statusCheckInterval) {
           clearInterval(statusCheckInterval);
           setStatusCheckInterval(null);
         }
         
-        // Update feedback count after finetuning completes
         updateFeedbackCount();
       }
     } catch (error) {
@@ -567,7 +515,6 @@ function App() {
       const response = await axios.get('/api/available_models');
       
       if (response.data) {
-        // Set available models
         const models = [
           response.data.default_model,
           ...(response.data.refined_models || [])
@@ -580,35 +527,31 @@ function App() {
     }
   };
 
-  // Handle model selection change
   const handleModelSelectionChange = (e) => {
     setSelectedModel(e.target.value);
   };
 
-  // Helper functions
-  const formatProbability = (prob) => {
-    if (prob === '--') return '--';
+  const formatProbabilityDisplay = (prob) => {
+    if (prob === '--') {
+      return {
+        display: '--',
+        color: 'var(--gray-dark)',
+        class: ''
+      };
+    }
+    
     const numProb = parseFloat(prob);
-    return numProb.toFixed(1);
-  };
-  
-  const getProbabilityColor = (prob) => {
-    if (prob === '--') return 'var(--gray-dark)';
-    const numProb = parseFloat(prob);
-    if (numProb > 75) return 'var(--warning)';  // Adjusted thresholds
-    if (numProb > 40) return 'var(--accent)';
-    return 'var(--success)';
-  };
-  
-  const getProbabilityClass = (prob) => {
-    if (prob === '--') return '';
-    const numProb = parseFloat(prob);
-    return numProb > 75 ? 'high-probability' : numProb > 40 ? 'medium-probability' : 'low-probability';
+    return {
+      display: numProb.toFixed(1),
+      color: numProb > 75 ? 'var(--warning)' : 
+             numProb > 40 ? 'var(--accent)' : 'var(--success)',
+      class: numProb > 75 ? 'high-probability' : 
+             numProb > 40 ? 'medium-probability' : 'low-probability'
+    };
   };
 
   return (
     <div className="App">
-      {/* Header with Authentication */}
       <header className="header">
         <div className="header-container">
           <h1 className="header-title">Clinician Guided Grad-CAM</h1>
@@ -628,29 +571,26 @@ function App() {
         </div>
       </header>
       
-      {/* Authentication Forms */}
       {!isAuthenticated && (
         <div className="auth-container">
           {showLoginForm && (
             <LoginForm 
               onLoginSuccess={handleLoginSuccess} 
-              onSwitchToRegister={toggleAuthForms}
+              onSwitchToRegister={toggleAuthenticationView}
             />
           )}
           
           {showRegistrationForm && (
             <RegistrationForm 
               onRegistrationSuccess={() => setShowLoginForm(true)} 
-              onSwitchToLogin={toggleAuthForms}
+              onSwitchToLogin={toggleAuthenticationView}
             />
           )}
         </div>
       )}
       
-      {/* Main Application - only shown when authenticated */}
       {isAuthenticated && (
         <div className="main-container">
-          {/* File Upload Card */}
           <div className="card">
             <div className="card-header">
               <h2 className="card-title">Upload X-ray Image</h2>
@@ -660,7 +600,7 @@ function App() {
               <input 
                 type="file" 
                 accept="image/jpeg,image/png,image/bmp,image/tiff" 
-                onChange={handleFileUpload}
+                onChange={handleXrayImageUpload}
                 disabled={isLoading}
                 ref={fileInputRef}
               />
@@ -674,48 +614,42 @@ function App() {
             </div>
           </div>
           
-          {/* Success Message */}
-          {successMessage && (
+          {feedbackSubmissionSuccess && (
             <div className="success-status">
               <h4>✓ Success!</h4>
-              <p>{successMessage}</p>
+              <p>{feedbackSubmissionSuccess}</p>
             </div>
           )}
           
-          {/* Images Section */}
-          {originalImage && (
+          {originalXrayImage && (
             <div className="card">
               <div className="card-header">
                 <h2 className="card-title">Analysis Results</h2>
               </div>
               
-              {/* TB Probability Display */}
               <div className="result">
                 <div className="probability-display">
                   <span className="probability-label">Tuberculosis Probability:</span>
                   <span 
-                    className={`probability-value ${getProbabilityClass(tbProbability)}`}
-                    style={{ color: getProbabilityColor(tbProbability) }}
+                    className={`probability-value ${formatProbabilityDisplay(tuberculosisProbability).class}`}
+                    style={{ color: formatProbabilityDisplay(tuberculosisProbability).color }}
                   >
-                    {formatProbability(tbProbability)}%
+                    {formatProbabilityDisplay(tuberculosisProbability).display}%
                   </span>
                 </div>
               </div>
               
-              {/* Images */}
               <div className="image-section">
-                {/* Original image */}
                 <div className="img-container">
                   <div className="img-header">Original X-ray</div>
                   <div className="img-content">
                     <img 
-                      src={`data:image/jpeg;base64,${originalImage}`} 
+                      src={`data:image/jpeg;base64,${originalXrayImage}`} 
                       alt="Original X-ray" 
                     />
                   </div>
                 </div>
                 
-                {/* Grad-CAM overlay */}
                 <div className="img-container">
                   <div className="img-header">
                     Grad-CAM Analysis
@@ -723,9 +657,9 @@ function App() {
                       <button
                         className="btn-secondary"
                         style={{padding: '6px 12px', fontSize: '0.9rem'}}
-                        onClick={toggleDraw}
+                        onClick={toggleAnnotationTool}
                       >
-                        {isCanvasVisible ? 'Hide Drawing Tool' : 'Draw Annotations'}
+                        {isAnnotationToolVisible ? 'Hide Drawing Tool' : 'Draw Annotations'}
                       </button>
                     )}
                   </div>
@@ -739,7 +673,7 @@ function App() {
                         <canvas 
                           ref={displayCanvasRef}
                           id="displayCanvas"
-                          style={{ display: isCanvasVisible ? 'block' : 'none' }}
+                          style={{ display: isAnnotationToolVisible ? 'block' : 'none' }}
                           onMouseDown={handleMouseDown}
                           onMouseMove={handleMouseMove}
                           onMouseUp={handleMouseUp}
@@ -756,8 +690,7 @@ function App() {
                 </div>
               </div>
               
-              {/* Moved Label Selection above Drawing Tools for better visibility */}
-              {gradCamImage && isCanvasVisible && (
+              {gradCamImage && isAnnotationToolVisible && (
                 <div className="label-section" style={{ marginBottom: '25px' }}>
                   <h3 className="label-title">Select Diagnosis (Required):</h3>
                   <div className="label-row">
@@ -766,8 +699,8 @@ function App() {
                         type="radio" 
                         name="tb_label" 
                         value="TB"
-                        checked={tbLabel === 'TB'}
-                        onChange={() => setTbLabel('TB')}
+                        checked={tuberculosisDiagnosis === 'TB'}
+                        onChange={() => setTuberculosisDiagnosis('TB')}
                       />
                       TB Present
                     </label>
@@ -776,8 +709,8 @@ function App() {
                         type="radio" 
                         name="tb_label" 
                         value="Normal"
-                        checked={tbLabel === 'Normal'}
-                        onChange={() => setTbLabel('Normal')}
+                        checked={tuberculosisDiagnosis === 'Normal'}
+                        onChange={() => setTuberculosisDiagnosis('Normal')}
                       />
                       Normal
                     </label>
@@ -785,36 +718,34 @@ function App() {
                 </div>
               )}
               
-              {/* Drawing Tools */}
-              {gradCamImage && isCanvasVisible && (
+              {gradCamImage && isAnnotationToolVisible && (
                 <div className="drawing-tools">
                   <button 
                     className="btn-secondary" 
-                    onClick={undoShape} 
-                    disabled={shapes.length === 0}
+                    onClick={undoAnnotationShape} 
+                    disabled={annotationShapes.length === 0}
                   >
                     Undo Last Shape
                   </button>
                   <button 
                     className="btn-secondary" 
-                    onClick={resetShapes} 
-                    disabled={shapes.length === 0}
+                    onClick={resetAnnotations} 
+                    disabled={annotationShapes.length === 0}
                   >
                     Clear All
                   </button>
                   <button 
                     className="btn-primary" 
-                    onClick={submitMask} 
-                    disabled={shapes.length === 0 || tbLabel === null}
-                    title={tbLabel === null ? "Please select a diagnosis before submitting" : ""}
+                    onClick={submitAnnotationMask} 
+                    disabled={annotationShapes.length === 0 || tuberculosisDiagnosis === null}
+                    title={tuberculosisDiagnosis === null ? "Please select a diagnosis before submitting" : ""}
                   >
                     Submit Annotations
                   </button>
                 </div>
               )}
               
-              {/* Drawing Instructions */}
-              {gradCamImage && isCanvasVisible && (
+              {gradCamImage && isAnnotationToolVisible && (
                 <div className="text-muted" style={{ textAlign: 'center', marginTop: '15px', fontStyle: 'italic' }}>
                   Draw shapes around areas of interest in the image. Click and drag to create shapes.
                 </div>
@@ -822,7 +753,6 @@ function App() {
             </div>
           )}
           
-          {/* Model Refinement Section */}
           <div className="card">
             <div className="card-header">
               <h2 className="card-title">Model Management</h2>
@@ -842,8 +772,8 @@ function App() {
             <div className="model-actions">
               <button 
                 className="btn-primary" 
-                onClick={runFinetuning} 
-                disabled={isRefining || feedbackCount === 0}
+                onClick={runModelRefinement} 
+                disabled={isRefiningModel || feedbackCount === 0}
                 title={feedbackCount === 0 ? "Need feedback data to refine model" : ""}
               >
                 Run Offline Refinement
@@ -853,7 +783,7 @@ function App() {
                 <select 
                   value={selectedModel}
                   onChange={handleModelSelectionChange}
-                  disabled={isRefining || availableModels.length === 0}
+                  disabled={isRefiningModel || availableModels.length === 0}
                   className="model-dropdown"
                 >
                   {availableModels.map((model, index) => (
@@ -866,7 +796,7 @@ function App() {
                 <button 
                   className="btn-secondary" 
                   onClick={switchModel}
-                  disabled={isRefining || selectedModel === currentModel}
+                  disabled={isRefiningModel || selectedModel === currentModel}
                   title={selectedModel === currentModel ? "Already using this model" : ""}
                 >
                   Switch Model
@@ -874,22 +804,21 @@ function App() {
               </div>
             </div>
             
-            {/* Progress bar for finetuning */}
-            {(isRefining || finetuningStatus) && (
+            {(isRefiningModel || modelRefinementStatus) && (
               <div className="refinement-status">
-                {isRefining && (
+                {isRefiningModel && (
                   <div className="progress-container">
                     <div className="progress-label">Refinement progress:</div>
                     <div className="progress-bar-container">
                       <div 
                         className="progress-bar" 
-                        style={{ width: `${finetuningProgress}%` }}
+                        style={{ width: `${modelRefinementProgress}%` }}
                       ></div>
                     </div>
-                    <div className="progress-text">{Math.round(finetuningProgress)}%</div>
+                    <div className="progress-text">{Math.round(modelRefinementProgress)}%</div>
                   </div>
                 )}
-                <div className="status-message">{finetuningStatus}</div>
+                <div className="status-message">{modelRefinementStatus}</div>
               </div>
             )}
             
@@ -905,14 +834,12 @@ function App() {
         </div>
       )}
       
-      {/* Loading overlay */}
       {isLoading && (
         <div className="spinner-overlay">
           <div className="spinner"></div>
         </div>
       )}
       
-      {/* Footer */}
       <footer className="footer">
         <div>© 2025 Clinician-Guided Grad-CAM | Tuberculosis Detection AI</div>
       </footer>

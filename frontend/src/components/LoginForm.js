@@ -2,47 +2,55 @@ import React, { useState } from 'react';
 import axios from 'axios';
 
 const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    username: '',
+    password: ''
+  });
+  const [loginError, setLoginError] = useState('');
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
   
-  const handleSubmit = async (e) => {
+  const handleInputChange = (e) => {
+    const { id, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [id]: value
+    }));
+  };
+  
+  const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+    const { username, password } = formData;
     
-    // Validation
+    setLoginError('');
+    
     if (!username || !password) {
-      setError('Please enter both username and password');
+      setLoginError('Please enter both username and password');
       return;
     }
     
-    setLoading(true);
+    setIsAuthenticating(true);
     
     try {
-      const response = await axios.post('/api/auth/login', {
-        username,
-        password
-      });
+      const response = await axios.post('/api/auth/login', { username, password });
       
       if (response.data && response.data.token) {
         onLoginSuccess(response.data);
       } else {
-        setError('Login failed. Please try again.');
+        setLoginError('Login failed. Please try again.');
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed. Please try again.');
+      setLoginError(err.response?.data?.message || 'Login failed. Please try again.');
     } finally {
-      setLoading(false);
+      setIsAuthenticating(false);
     }
   };
   
   return (
     <div className="auth-form-container">
       <h2 className="auth-title">Welcome Back</h2>
-      {error && <div className="error-message">{error}</div>}
+      {loginError && <div className="error-message">{loginError}</div>}
       
-      <form onSubmit={handleSubmit} className="auth-form">
+      <form onSubmit={handleLoginSubmit} className="auth-form">
         <div className="form-group">
           <label htmlFor="username">Username</label>
           <div className="input-with-icon">
@@ -50,9 +58,9 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
             <input
               type="text"
               id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              disabled={loading}
+              value={formData.username}
+              onChange={handleInputChange}
+              disabled={isAuthenticating}
               required
               placeholder="Enter your username"
               className="enhanced-input"
@@ -67,9 +75,9 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
             <input
               type="password"
               id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
+              value={formData.password}
+              onChange={handleInputChange}
+              disabled={isAuthenticating}
               required
               placeholder="Enter your password"
               className="enhanced-input"
@@ -80,9 +88,9 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
         <button 
           type="submit" 
           className="btn-primary auth-button" 
-          disabled={loading}
+          disabled={isAuthenticating}
         >
-          {loading ? 'Logging in...' : 'Login'}
+          {isAuthenticating ? 'Logging in...' : 'Login'}
         </button>
       </form>
       
@@ -91,7 +99,7 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
         <button 
           className="link-button" 
           onClick={onSwitchToRegister}
-          disabled={loading}
+          disabled={isAuthenticating}
         >
           Register
         </button>
