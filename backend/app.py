@@ -22,7 +22,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 
 from attention_model import SimpleAttentionCNN, SpatialAttention
-from grad_cam.grad_cam import GradCAM, show_grad_cam, find_good_layer
+from grad_cam.grad_cam import HeatMapper, show_grad_cam, find_good_layer
 
 # Track status of model refinement process
 finetuning_process = None
@@ -253,7 +253,7 @@ def process_image(file):
         _, grad_cam_overlay_bgr = show_grad_cam(
             img_np, 
             attention_model, 
-            focus_layer=focus_layer,
+            target_layer=focus_layer,
             use_relu=True,
             smooth_factor=0.3,
             alpha=0.65
@@ -310,7 +310,7 @@ def process_image_with_comparison(file):
                 _, original_gradcam = show_grad_cam(
                     img_np, 
                     loaded_models["original"], 
-                    focus_layer=focus_layer,
+                    target_layer=focus_layer,
                     use_relu=True,
                     smooth_factor=0.3,
                     alpha=0.65
@@ -347,7 +347,7 @@ def process_image_with_comparison(file):
                 _, finetuned_gradcam = show_grad_cam(
                     img_np, 
                     loaded_models["finetuned"], 
-                    focus_layer=focus_layer,
+                    target_layer=focus_layer,
                     use_relu=True,
                     smooth_factor=0.3,
                     alpha=0.65
