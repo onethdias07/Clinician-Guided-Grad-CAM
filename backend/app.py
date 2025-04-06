@@ -26,6 +26,7 @@ from grad_cam.grad_cam import HeatMapper, show_grad_cam, find_good_layer
 
 # Track status of model refinement process
 finetuning_process = None
+# Front end msgs for the finetuning
 finetuning_status = {
     "running": False,
     "message": "No refinement process running",
@@ -43,8 +44,8 @@ loaded_models = {
 
 # In-memory user store (would be replaced by database in production)
 users = {}
-JWT_SECRET = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
-JWT_EXPIRATION = 24 * 60 * 60  # 24 hours in seconds
+JWT_SECRET = os.environ.get('JWT_SECRET_KEY', 'i-shall-replace-this-later')
+JWT_EXPIRATION = 24 * 60 * 60  # this is 24 hours in seconds
 
 def token_required(f):
     @wraps(f)
@@ -148,7 +149,6 @@ def load_both_models():
         original_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
         try:
             loaded_models["original"] = load_attention_model(original_path)
-            logging.info(f"Loaded original model from {original_path}")
         except Exception as e:
             logging.error(f"Error loading original model: {e}")
     
@@ -158,7 +158,6 @@ def load_both_models():
             finetuned_path = os.path.join(base_dir, 'finetuning', latest_model)
             try:
                 loaded_models["finetuned"] = load_attention_model(finetuned_path)
-                logging.info(f"Loaded finetuned model from {finetuned_path}")
             except Exception as e:
                 logging.error(f"Error loading finetuned model: {e}")
     
@@ -327,7 +326,6 @@ def process_image_with_comparison(file):
                 'original_gradcam': original_gradcam_base64
             })
         except Exception as e:
-            logging.error(f"Error processing with original model: {e}")
             results['original_error'] = str(e)
     
     if finetuned_loaded:
@@ -364,7 +362,6 @@ def process_image_with_comparison(file):
                 'finetuned_gradcam': finetuned_gradcam_base64
             })
         except Exception as e:
-            logging.error(f"Error processing with finetuned model: {e}")
             results['finetuned_error'] = str(e)
     
     normal_results = process_image(file)
@@ -410,8 +407,6 @@ def monitor_finetuning_output(process):
     global finetuning_status
     
     for line in process.stdout:
-        logging.info(f"Finetuning output: {line.strip()}")
-        
         if "[Epoch" in line:
             try:
                 parts = line.split('[Epoch ')[1].split(']')[0].split('/')
@@ -423,7 +418,7 @@ def monitor_finetuning_output(process):
                 finetuning_status["message"] = f"Refining model (Epoch {current_epoch}/{total_epochs})"
                 
             except Exception as e:
-                logging.error(f"Error parsing epoch info: {e}")
+                pass
 
     if process.poll() is not None:
         exit_code = process.returncode
@@ -448,7 +443,6 @@ def find_latest_refined_model():
         newest_model = max(model_files, key=lambda f: os.path.getmtime(os.path.join(model_dir, f)))
         return newest_model
     except Exception as e:
-        logging.error(f"Error finding latest model: {e}")
         return None
 
 def find_all_refined_models():
@@ -464,7 +458,6 @@ def find_all_refined_models():
         model_files.sort(key=lambda f: os.path.getmtime(os.path.join(model_dir, f)), reverse=True)
         return model_files
     except Exception as e:
-        logging.error(f"Error finding refined models: {e}")
         return []
 
 app = Flask(__name__)
@@ -495,18 +488,7 @@ def count_feedback_items():
         with open(log_csv_path, 'r') as f:
             return max(0, sum(1 for _ in f) - 1)
     except Exception as e:
-        print(f"Error counting feedback items: {e}")
         return 0
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(os.path.join(base_dir, "app_debug.log"))
-    ]
-)
-logger = logging.getLogger("App")
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
@@ -654,8 +636,6 @@ def run_finetuning(current_user):
     
     global finetuning_process, finetuning_status
     
-    logging.info("Received request to /api/run_finetuning endpoint")
-    
     if finetuning_status["running"]:
         return jsonify({
             "success": False,
@@ -686,8 +666,6 @@ def run_finetuning(current_user):
         "--batch-size", "8"
     ]
     
-    logging.info(f"Running finetuning command: {' '.join(cmd)}")
-    
     try:
         finetuning_process = subprocess.Popen(
             cmd,
@@ -713,7 +691,6 @@ def run_finetuning(current_user):
         })
     
     except Exception as e:
-        logging.error(f"Error starting finetuning process: {str(e)}")
         return jsonify({
             "success": False,
             "message": f"Error: {str(e)}"
@@ -756,7 +733,6 @@ def switch_model(current_user):
         })
         
     requested_model = data["model_name"]
-    logging.info(f"Attempting to switch to model: {requested_model}")
     
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -781,7 +757,6 @@ def switch_model(current_user):
         })
     
     except Exception as e:
-        logging.error(f"Error switching model: {str(e)}")
         return jsonify({
             "success": False,
             "message": f"Error: {str(e)}"
@@ -808,10 +783,6 @@ if __name__ == "__main__":
         'role': 'user'
     }
     
-    print("Default users created:")
-    print("- Admin user: username='admin', password='admin' (or set by ADMIN_PASSWORD env var)")
-    print("- Regular user: username='user', password='password'")
-    
     load_both_models()
     
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=8000)

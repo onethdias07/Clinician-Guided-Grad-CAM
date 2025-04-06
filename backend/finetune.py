@@ -14,18 +14,20 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torchvision.transforms as T
 
+# importing the forward pass for the CNN
 from attention_model import SimpleAttentionCNN
 
 
-# Configure logging to track refinement progress
+# Configure minimal logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    format="%(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("Finetune")
 
 
+# this is the function which will parse the arguments from the command line or in this case app.py
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Offline finetuning script for TB X-ray classification using clinician feedback with masks."
@@ -109,7 +111,7 @@ def parse_arguments():
     )
     return parser.parse_args()
 
-
+# this is the dataset class which will load the images and masks
 class TBXrayFeedbackDataset(Dataset):
     def __init__(self, filepaths, labels, mask_paths=None, transform=None, mask_transform=None):
         self.filepaths = filepaths
@@ -162,7 +164,7 @@ class TBXrayFeedbackDataset(Dataset):
         
         return img_tensor, label_tensor, mask_tensor
 
-
+# this is the attention loss function which will be used to calculate the loss between the attention maps and the expert masks
 def attention_alignment_loss(attention_maps, expert_masks):
     losses = []
     batch_size = attention_maps.size(0)
@@ -174,7 +176,7 @@ def attention_alignment_loss(attention_maps, expert_masks):
         attn = attention_maps[i]
         mask = expert_masks[i]
         
-        # Handle size mismatches by resizing mask to match attention map
+        # Handle size mismatches by resizing mask to match attention map -> crucial for smooth transmision from masks to attention maps
         if attn.shape != mask.shape:
             print(f"Shape mismatch: attention {attn.shape}, mask {mask.shape}")
             
@@ -186,7 +188,7 @@ def attention_alignment_loss(attention_maps, expert_masks):
                     align_corners=False
                 ).squeeze(0)
         
-        # Normalize mask to sum to 1 (convert to probability distribution)
+        # Normalize mask to sum to 1 if it contains any non-zero values
         mask_sum = mask.sum()
         if mask_sum > 0:
             mask = mask / mask_sum
@@ -199,7 +201,7 @@ def attention_alignment_loss(attention_maps, expert_masks):
     else:
         return torch.tensor(0.0, device=attention_maps.device)
 
-
+# this function loads the original dataset al the way from model/tuberculosis-dataset
 def load_original_dataset(base_dir):
     normal_dir = os.path.join(base_dir, "Normal")
     tb_dir = os.path.join(base_dir, "Tuberculosis")
@@ -225,10 +227,6 @@ def load_original_dataset(base_dir):
 
 
 def load_feedback_data(feedback_csv, images_dir, masks_dir):
-    """Load feedback data from CSV and resolve paths to images and masks."""
-    logger.info(f"Looking for feedback CSV at: {feedback_csv}")
-    
-    # Try to find feedback CSV at alternative location if needed
     if not os.path.isfile(feedback_csv):
         try:
             from pathlib import Path
@@ -236,19 +234,16 @@ def load_feedback_data(feedback_csv, images_dir, masks_dir):
             alt_feedback_csv = base_dir / 'feedback' / 'feedback_log.csv'
             
             if os.path.exists(alt_feedback_csv):
-                logger.info(f"Using alternative path: {alt_feedback_csv}")
                 feedback_csv = str(alt_feedback_csv)
                 images_dir = str(base_dir / 'feedback' / 'images')
                 masks_dir = str(base_dir / 'feedback' / 'masks')
-        except Exception as e:
-            logger.error(f"Error resolving alternative path: {e}")
+        except Exception:
+            return [], [], []
 
     if not os.path.isfile(feedback_csv):
-        logger.error(f"Feedback log CSV not found: {feedback_csv}")
         return [], [], []
 
     try:
-        # Clean and prepare CSV data for reading
         df = prepare_feedback_csv(feedback_csv)
         if df.empty:
             return [], [], []
@@ -267,50 +262,43 @@ def load_feedback_data(feedback_csv, images_dir, masks_dir):
         
         # Check if required columns exist
         if cols['image_filename'] is None or cols['label'] is None:
-            logger.error(f"Missing required columns in feedback CSV. Available columns: {df.columns.tolist()}")
             return [], [], []
 
-        # Process each row
+        # Process each row of labels, mask paths and image paths
         filepaths, labels, mask_paths = [], [], []
         for _, row in df.iterrows():
-            # Process image path
+            # this is processing image paths
             img_rel = row[cols['image_filename']]
             img_abs = resolve_path(img_rel, images_dir)
             if not img_abs:
-                logger.warning(f"Image not found: {img_rel}, skipping")
                 continue
                 
-            # Process label value
+            # this is processing label values
             label_val = row[cols['label']]
             int_label = convert_label_to_int(label_val)
             if int_label is None:
                 continue
                 
-            # Process mask path if available
+            # this is process mask path if available (if combining original dataset then there is no masks)
             mask_abs = None
             if cols['mask_filename']:
                 mask_rel = row[cols['mask_filename']]
                 if mask_rel:
                     mask_abs = resolve_path(mask_rel, masks_dir)
                     if not mask_abs:
-                        logger.warning(f"Mask not found: {mask_rel}, proceeding without mask")
+                        continue
 
             # Add to dataset
             filepaths.append(img_abs)
             labels.append(int_label)
             mask_paths.append(mask_abs)
 
-        logger.info(f"Loaded {len(filepaths)} valid feedback images")
-        logger.info(f"Found {sum(1 for m in mask_paths if m is not None)} valid masks")
-        
         return filepaths, labels, mask_paths
         
     except Exception as e:
-        logger.error(f"Failed to read feedback CSV: {e}")
         return [], [], []
 
 def prepare_feedback_csv(csv_path):
-    """Clean and prepare CSV for reading."""
     try:
         with open(csv_path, 'r') as f:
             lines = f.readlines()
@@ -335,11 +323,9 @@ def prepare_feedback_csv(csv_path):
         return df
         
     except Exception as e:
-        logger.error(f"Error preparing CSV: {e}")
         return pd.DataFrame()
 
 def resolve_path(rel_path, base_dir):
-    """Resolve a relative path to an absolute path, trying both direct and basename approaches."""
     # Try direct path
     abs_path = os.path.join(base_dir, rel_path)
     if os.path.isfile(abs_path):
@@ -348,13 +334,12 @@ def resolve_path(rel_path, base_dir):
     # Try using just the basename
     basename_path = os.path.join(base_dir, os.path.basename(rel_path))
     if os.path.isfile(basename_path):
-        logger.info(f"Found using basename: {os.path.basename(rel_path)}")
         return basename_path
         
     return None
 
+# this function will convert tb or not to 1 or 0
 def convert_label_to_int(label_val):
-    """Convert various label formats to integer (0=Normal, 1=TB)."""
     if isinstance(label_val, str):
         if label_val.lower() == "tb":
             return 1
@@ -364,13 +349,11 @@ def convert_label_to_int(label_val):
             try:
                 return int(label_val)
             except ValueError:
-                logger.warning(f"Invalid label '{label_val}', skipping")
                 return None
     else:
         try:
             return int(label_val)
         except (ValueError, TypeError):
-            logger.warning(f"Invalid label {label_val}, skipping")
             return None
 
 
@@ -400,7 +383,7 @@ def create_train_val_split(paths, labels, masks=None, test_split=0.2, random_see
 
     return train_paths, train_labels, train_masks, val_paths, val_labels, val_masks
 
-
+# main function which will run the epcohs and training
 def train_one_epoch(model, dataloader, optimizer, criterion, device, mask_loss_weight):
     model.train()
     total_loss = 0.0
@@ -425,14 +408,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, mask_loss_w
         
         optimizer.zero_grad()
         outputs, attention_maps = model(imgs)
-        
+        # this is the classification loss 
         cls_loss = criterion(outputs, labels)
         
+        # this is the attention loss (expert masks)
         attn_loss = torch.tensor(0.0, device=device)
         if mask_loss_weight > 0 and any(mask is not None for mask in valid_masks):
             attn_loss = attention_alignment_loss(attention_maps, valid_masks)
             valid_mask_samples += sum(1 for mask in valid_masks if mask is not None)
         
+        # this is the total loss (classification + attention) -> experiemnt with it
         loss = cls_loss + mask_loss_weight * attn_loss
         
         loss.backward()
@@ -528,31 +513,19 @@ def custom_collate(batch):
 
 def main():
     args = parse_arguments()
-    logger.info("Finetuning with mask-guided attention using these arguments:")
-    logger.info(args)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
 
     output_dir = os.path.dirname(args.new_model_path)
     if not os.path.exists(output_dir):
-        logger.info(f"Creating output directory: {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
     
-    logger.info(f"Output directory: {output_dir}")
-    logger.info(f"Directory exists: {os.path.isdir(output_dir)}")
-    logger.info(f"Directory is writable: {os.access(output_dir, os.W_OK)}")
-    
     args.new_model_path = os.path.abspath(args.new_model_path)
-    logger.info(f"Absolute path for new model: {args.new_model_path}")
     
     if not os.path.isfile(args.old_model_path):
-        logger.error(f"Model not found: {args.old_model_path}")
         return
     
     model = SimpleAttentionCNN().to(device)
     model.load_state_dict(torch.load(args.old_model_path, map_location=device))
-    logger.info(f"Loaded model from {args.old_model_path}")
 
     fb_paths, fb_labels, fb_masks = load_feedback_data(
         args.feedback_log, 
@@ -561,18 +534,15 @@ def main():
     )
     
     if len(fb_paths) == 0:
-        logger.error("No feedback data found. Please check the feedback CSV and directories.")
         return
 
     if args.include_original_data:
         orig_paths, orig_labels = load_original_dataset(args.original_train_dir)
-        logger.info(f"Including {len(orig_paths)} images from original dataset")
         
         all_paths = orig_paths + fb_paths
         all_labels = orig_labels + fb_labels
         all_masks = [None] * len(orig_paths) + fb_masks
     else:
-        logger.info("Using only feedback data for fine-tuning")
         all_paths = fb_paths
         all_labels = fb_labels
         all_masks = fb_masks
@@ -582,9 +552,6 @@ def main():
         test_split=args.test_split,
         random_seed=args.random_seed
     )
-    
-    logger.info(f"Training set: {len(train_paths)} images, {sum(1 for m in train_masks if m is not None)} masks")
-    logger.info(f"Validation set: {len(val_paths)} images, {sum(1 for m in val_masks if m is not None)} masks")
 
     train_transforms = T.Compose([
         T.Resize((256, 256)),
@@ -629,13 +596,8 @@ def main():
         optimizer, mode='max', factor=0.1, patience=2, min_lr=1e-6, verbose=True
     )
 
-    logger.info("Evaluating initial model performance...")
     val_metrics = evaluate_model(model, val_loader, criterion, device, args.mask_loss_weight)
     best_val_acc = val_metrics['accuracy']
-    
-    logger.info(f"Initial validation - Loss: {val_metrics['loss']:.4f}, Accuracy: {val_metrics['accuracy']:.4f}")
-    if val_metrics['mask_samples'] > 0:
-        logger.info(f"Initial attention loss: {val_metrics['attn_loss']:.6f} on {val_metrics['mask_samples']} masks")
 
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_one_epoch(
@@ -648,18 +610,6 @@ def main():
         
         scheduler.step(val_metrics['accuracy'])
 
-        logger.info(f"[Epoch {epoch}/{args.epochs}] " +
-                   f"Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.4f} | " +
-                   f"Val - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.4f}")
-        
-        if train_metrics['mask_samples'] > 0:
-            logger.info(f"    Train: Class Loss: {train_metrics['cls_loss']:.4f}, " +
-                       f"Attn Loss: {train_metrics['attn_loss']:.6f} ({train_metrics['mask_samples']} masks)")
-        
-        if val_metrics['mask_samples'] > 0:
-            logger.info(f"    Val: Class Loss: {val_metrics['cls_loss']:.4f}, " +
-                      f"Attn Loss: {val_metrics['attn_loss']:.6f} ({val_metrics['mask_samples']} masks)")
-
         if val_metrics['accuracy'] > best_val_acc:
             best_val_acc = val_metrics['accuracy']
             try:
@@ -668,26 +618,13 @@ def main():
                 
                 torch.save(model.state_dict(), args.new_model_path)
                 
-                if os.path.exists(args.new_model_path):
-                    logger.info(f"Validation accuracy improved to {best_val_acc:.4f}. Model saved to {args.new_model_path}")
-                else:
-                    logger.error(f"Failed to save model: File not created at {args.new_model_path}")
             except Exception as e:
-                logger.error(f"Error saving model: {e}")
+                pass
 
     try:
         torch.save(model.state_dict(), args.new_model_path)
-        logger.info(f"Final model saved to {args.new_model_path}")
     except Exception as e:
-        logger.error(f"Error saving final model: {e}")
-
-    logger.info(f"Fine-tuning complete. Best validation accuracy: {best_val_acc:.4f}")
-    
-    if os.path.exists(args.new_model_path):
-        file_size = os.path.getsize(args.new_model_path) / 1024 / 1024
-        logger.info(f"Verified: Model file exists at {args.new_model_path} (Size: {file_size:.2f} MB)")
-    else:
-        logger.error(f"ERROR: Model file not found at {args.new_model_path} after training")
+        pass
 
 
 if __name__ == "__main__":

@@ -1,11 +1,15 @@
+// These are all the react hooks
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+// Boostrap CSS for styling fronend
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
+// This is the authentication pages login and registration
 import LoginForm from './components/LoginForm';
 import RegistrationForm from './components/RegistrationForm';
 
 function App() {
+  // These are all the variables for authentication
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authToken, setAuthToken] = useState('');
   const [username, setUsername] = useState('');
@@ -13,6 +17,7 @@ function App() {
   const [showLoginForm, setShowLoginForm] = useState(true);
   const [showRegistrationForm, setShowRegistrationForm] = useState(false);
   
+  // These are all the variables for image processing
   const [originalXrayImage, setOriginalXrayImage] = useState(null);
   const [gradCamImage, setGradCamImage] = useState(null);
   const [tuberculosisProbability, setTuberculosisProbability] = useState('--');
@@ -26,14 +31,17 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [feedbackSubmissionSuccess, setFeedbackSubmissionSuccess] = useState(null);
   
+  // These are all the variables for model management
   const [isRefiningModel, setIsRefiningModel] = useState(false);
   const [modelRefinementProgress, setModelRefinementProgress] = useState(0);
   const [modelRefinementStatus, setModelRefinementStatus] = useState('');
   const [statusCheckInterval, setStatusCheckInterval] = useState(null);
   
+  // These are all the variables for model selection
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('tb_chest_xray_attention_best.pt');
 
+  // These are all the variables for canvas related stuff
   const displayCanvasRef = useRef(null);
   const maskCanvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -74,6 +82,7 @@ function App() {
     );
   }, []);
   
+  // these are the main authentication functions
   const verifyToken = async (token) => {
     try {
       const response = await axios.get('/api/auth/verify', {
@@ -92,7 +101,6 @@ function App() {
         handleLogout();
       }
     } catch (error) {
-      console.error('Token verification failed:', error);
       handleLogout();
     }
   };
@@ -197,6 +205,7 @@ function App() {
     }
   };
 
+  // this is the annotation canvas setup
   const setupAnnotationCanvas = (width, height) => {
     if (!displayCanvasRef.current || !maskCanvasRef.current) return;
 
@@ -506,7 +515,7 @@ function App() {
         updateFeedbackCount();
       }
     } catch (error) {
-      console.error('Error checking finetuning status:', error);
+      setModelRefinementStatus('Error checking status');
     }
   };
 

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# this class defines the spacial mechanism for the attention model
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
         super(SpatialAttention, self).__init__()
@@ -15,6 +16,7 @@ class SpatialAttention(nn.Module):
         )
         self.squash = nn.Sigmoid()
 
+    # so this is the foward pass which the image in go through to the model
     def forward(self, x):
         avg_out = torch.mean(x, dim=1, keepdim=True)
         max_out, _ = torch.max(x, dim=1, keepdim=True)
@@ -26,6 +28,7 @@ class SpatialAttention(nn.Module):
         return attention_map
 
 
+# This is the backbone of the model
 class SimpleAttentionCNN(nn.Module):
     def __init__(self):
         super(SimpleAttentionCNN, self).__init__()
@@ -51,6 +54,7 @@ class SimpleAttentionCNN(nn.Module):
 
         self.attention = SpatialAttention(kernel_size=7)
 
+        # this is the classification head or the model brin
         self.brain = nn.Sequential(
             nn.Flatten(),
             nn.Linear(64 * 32 * 32, 64),

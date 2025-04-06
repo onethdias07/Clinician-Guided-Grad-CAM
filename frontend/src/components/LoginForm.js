@@ -32,14 +32,11 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
     
     try {
       const response = await axios.post('/api/auth/login', { username, password });
-      
       if (response.data && response.data.token) {
         onLoginSuccess(response.data);
-      } else {
-        setLoginError('Login failed. Please try again.');
       }
     } catch (err) {
-      setLoginError(err.response?.data?.message || 'Login failed. Please try again.');
+      setLoginError(err.response?.data?.message || 'Login failed');
     } finally {
       setIsAuthenticating(false);
     }

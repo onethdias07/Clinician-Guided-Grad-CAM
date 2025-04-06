@@ -23,7 +23,7 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
     }
     
     if (password.length < 6) {
-      setRegistrationError('Password must be at least 6 characters long');
+      setRegistrationError('Password must be at least 6 characters');
       return;
     }
     
@@ -37,13 +37,10 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
       });
       
       if (response.data && response.status === 201) {
-        alert('Registration successful! You can now log in.');
         onRegistrationSuccess();
-      } else {
-        setRegistrationError('Registration failed. Please try again.');
       }
     } catch (err) {
-      setRegistrationError(err.response?.data?.message || 'Registration failed. Please try again.');
+      setRegistrationError(err.response?.data?.message || 'Registration failed');
     } finally {
       setIsRegistering(false);
     }
