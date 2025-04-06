@@ -1,4 +1,5 @@
 ## Setup Instructions
+Make sure both datasets are downloaded from kaggle refer to backend/model/tuberculosis-CNN-Model.ipynb
 
 ### Prerequisites
 
