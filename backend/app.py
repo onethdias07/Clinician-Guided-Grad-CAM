@@ -42,7 +42,7 @@ loaded_models = {
     "finetuned": None
 }
 
-# In-memory user store (would be replaced by database in production)
+# In-memory user store (would be replaced by database) -> do this if pushing to cloud
 users = {}
 JWT_SECRET = os.environ.get('JWT_SECRET_KEY', 'i-shall-replace-this-later')
 JWT_EXPIRATION = 24 * 60 * 60  # this is 24 hours in seconds
@@ -87,7 +87,7 @@ def token_required(f):
     return decorated
 
 def get_probability(img, model_type="current"):
-    # Simplified input handling - convert all inputs to tensor in a consistent way
+    # this is a simplified input handling -> convert all inputs to tensor in a consistent way
     if isinstance(img, Image.Image):
         # Convert PIL Image to tensor
         img_np = np.array(img.convert("L"))
@@ -103,7 +103,7 @@ def get_probability(img, model_type="current"):
     else:
         raise TypeError("Image must be PIL Image, numpy array, or torch Tensor")
     
-    # Use dictionary lookup instead of conditionals to select model
+    # Use dictionary lookup instead of conditionals to select model for better code clarity
     model_dict = {
         "original": loaded_models["original"],
         "finetuned": loaded_models["finetuned"],

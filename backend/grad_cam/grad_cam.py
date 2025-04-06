@@ -15,9 +15,11 @@ class HeatMapper:
         self.fwd_hook = target_layer.register_forward_hook(self.save_activations)
         self.bwd_hook = target_layer.register_full_backward_hook(self.save_grads)
 
+    # this will save all the activations form the forward pass
     def save_activations(self, module, input, output):
         self.activations = output.detach()
     
+    # this will save all the gradients from the backward pass
     def save_grads(self, module, grad_input, grad_output):
         self.gradients = grad_output[0].detach()
 
