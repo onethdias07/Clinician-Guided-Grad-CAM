@@ -8,26 +8,30 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
   const [registrationError, setRegistrationError] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   
+  const validateForm = () => {
+    if (!username || !password || !confirmPassword) {
+      return 'Please fill all fields';
+    }
+    if (password !== confirmPassword) {
+      return 'Passwords do not match';
+    }
+    if (password.length < 6) {
+      return 'Password must be at least 6 characters';
+    }
+    return null;
+  };
+
   const handleRegistrationSubmit = async (e) => {
     e.preventDefault();
-    setRegistrationError('');
     
-    if (!username || !password || !confirmPassword) {
-      setRegistrationError('Please fill all fields');
-      return;
-    }
-    
-    if (password !== confirmPassword) {
-      setRegistrationError('Passwords do not match');
-      return;
-    }
-    
-    if (password.length < 6) {
-      setRegistrationError('Password must be at least 6 characters');
+    const validationError = validateForm();
+    if (validationError) {
+      setRegistrationError(validationError);
       return;
     }
     
     setIsRegistering(true);
+    setRegistrationError('');
     
     try {
       const response = await axios.post('/api/auth/register', {
@@ -36,11 +40,14 @@ const RegistrationForm = ({ onRegistrationSuccess, onSwitchToLogin }) => {
         role: 'user'
       });
       
-      if (response.data && response.status === 201) {
+      if (response.status === 201) {
         onRegistrationSuccess();
       }
-    } catch (err) {
-      setRegistrationError(err.response?.data?.message || 'Registration failed');
+    } catch (error) {
+      setRegistrationError(
+        error.response?.status === 409 ? 'Username already exists' :
+        error.response?.data?.message || 'Registration failed'
+      );
     } finally {
       setIsRegistering(false);
     }

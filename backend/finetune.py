@@ -5,7 +5,6 @@ import argparse
 import numpy as np
 import pandas as pd
 import cv2
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,13 +17,21 @@ import torchvision.transforms as T
 from attention_model import SimpleAttentionCNN
 
 
-# Configure minimal logging
+# Configure logging with immediate flush
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.__stdout__)
+    ]
 )
 logger = logging.getLogger("Finetune")
+
+# Force immediate flushing of stdout
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+else:
+    sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
 
 # this is the function which will parse the arguments from the command line or in this case app.py
@@ -176,7 +183,7 @@ def attention_alignment_loss(attention_maps, expert_masks):
         attn = attention_maps[i]
         mask = expert_masks[i]
         
-        # Handle size mismatches by resizing mask to match attention map -> crucial for smooth transmision from masks to attention maps
+        # this Handles size mismatches by resizing mask to match attention map -> crucial for smooth transmision from masks to attention maps
         if attn.shape != mask.shape:
             print(f"Shape mismatch: attention {attn.shape}, mask {mask.shape}")
             
@@ -225,7 +232,7 @@ def load_original_dataset(base_dir):
 
     return filepaths, labels
 
-
+# this function will load the feedbaclk data gathered earlier
 def load_feedback_data(feedback_csv, images_dir, masks_dir):
     if not os.path.isfile(feedback_csv):
         try:
@@ -297,7 +304,7 @@ def load_feedback_data(feedback_csv, images_dir, masks_dir):
         
     except Exception as e:
         return [], [], []
-
+# this cleans the existing CSV for feedback
 def prepare_feedback_csv(csv_path):
     try:
         with open(csv_path, 'r') as f:
@@ -325,6 +332,7 @@ def prepare_feedback_csv(csv_path):
     except Exception as e:
         return pd.DataFrame()
 
+# to ensure all images, masks and lables are loaded
 def resolve_path(rel_path, base_dir):
     # Try direct path
     abs_path = os.path.join(base_dir, rel_path)
@@ -357,6 +365,7 @@ def convert_label_to_int(label_val):
             return None
 
 
+# data is split just like the original dataset (80% to train and 20% to test)
 def create_train_val_split(paths, labels, masks=None, test_split=0.2, random_seed=42):
     if masks is None:
         masks = [None] * len(paths)
@@ -384,7 +393,7 @@ def create_train_val_split(paths, labels, masks=None, test_split=0.2, random_see
     return train_paths, train_labels, train_masks, val_paths, val_labels, val_masks
 
 # main function which will run the epcohs and training
-def train_one_epoch(model, dataloader, optimizer, criterion, device, mask_loss_weight):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, mask_loss_weight, epoch=None, total_epochs=None):
     model.train()
     total_loss = 0.0
     total_cls_loss = 0.0
@@ -393,7 +402,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, mask_loss_w
     total_samples = 0
     valid_mask_samples = 0
 
-    for batch in dataloader:
+    for batch_idx, batch in enumerate(dataloader):
         imgs, labels, masks = batch
         
         imgs = imgs.to(device)
@@ -433,15 +442,28 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, mask_loss_w
         correct += (preds == labels).sum().item()
         total_samples += batch_size
 
-    return {
+        # Log progress every few batches
+        if batch_idx % 5 == 0:
+            progress = (batch_idx + 1) / len(dataloader) * 100
+            logger.info(f"[Batch Progress] {progress:.1f}%")
+            sys.stdout.flush()
+
+    metrics = {
         'loss': total_loss / total_samples,
         'cls_loss': total_cls_loss / total_samples, 
         'attn_loss': total_attn_loss / total_samples if total_attn_loss > 0 else 0,
         'accuracy': correct / total_samples,
         'mask_samples': valid_mask_samples
     }
+    
+    # Log epoch metrics in a standardized format
+    if epoch is not None and total_epochs is not None:
+        logger.info(f"[Epoch {epoch}/{total_epochs}] Train Loss: {metrics['loss']:.4f} Acc: {metrics['accuracy']:.4f}")
+    sys.stdout.flush()
+    
+    return metrics
 
-
+# this is be used later to evaluate the model when in traning
 def evaluate_model(model, dataloader, criterion, device, mask_loss_weight):
     model.eval()
     total_loss = 0.0
@@ -494,7 +516,8 @@ def evaluate_model(model, dataloader, criterion, device, mask_loss_weight):
         'mask_samples': valid_mask_samples
     }
     
-
+# this is when combining the original dataset with the feedback data 
+# cus the original data does not have expert drawn masks
 def custom_collate(batch):
     images = []
     labels = []
@@ -510,7 +533,7 @@ def custom_collate(batch):
     
     return images, labels, masks    
 
-
+# main function that will be run in app.py
 def main():
     args = parse_arguments()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -553,6 +576,7 @@ def main():
         random_seed=args.random_seed
     )
 
+    # this is the data augmentation and transformation for the training and validation datasets
     train_transforms = T.Compose([
         T.Resize((256, 256)),
         T.RandomHorizontalFlip(p=0.5),
@@ -590,8 +614,10 @@ def main():
         collate_fn=custom_collate
     )
 
+    # this is the loss function and optimizer
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    # this is the learning rate scheduler which will reduce the learning rate if the accuracy does not improve
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.1, patience=2, min_lr=1e-6, verbose=True
     )
@@ -600,18 +626,27 @@ def main():
     best_val_acc = val_metrics['accuracy']
 
     for epoch in range(1, args.epochs + 1):
+        logger.info(f"[Epoch {epoch}/{args.epochs}] Starting...")
+        sys.stdout.flush()
+        
         train_metrics = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, args.mask_loss_weight
+            model, train_loader, optimizer, criterion, device, args.mask_loss_weight,
+            epoch=epoch, total_epochs=args.epochs  # Pass epoch info
         )
         
         val_metrics = evaluate_model(
             model, val_loader, criterion, device, args.mask_loss_weight
         )
         
+        logger.info(f"[Epoch {epoch}/{args.epochs}] Val Loss: {val_metrics['loss']:.4f} Acc: {val_metrics['accuracy']:.4f}")
+        sys.stdout.flush()
+        
         scheduler.step(val_metrics['accuracy'])
 
         if val_metrics['accuracy'] > best_val_acc:
             best_val_acc = val_metrics['accuracy']
+            logger.info(f"[Epoch {epoch}/{args.epochs}] New best model saved!")
+            sys.stdout.flush()
             try:
                 save_dir = os.path.dirname(args.new_model_path)
                 os.makedirs(save_dir, exist_ok=True)
@@ -622,6 +657,7 @@ def main():
                 pass
 
     try:
+        # this saves the model
         torch.save(model.state_dict(), args.new_model_path)
     except Exception as e:
         pass

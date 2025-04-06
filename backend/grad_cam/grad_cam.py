@@ -100,7 +100,7 @@ class HeatMapper:
         
         return heat_map
 
-
+# this checks the best convo layer to use for grad cam
 def find_good_layer(model, img_tensor):
     candidate_layers = []
     
@@ -143,7 +143,7 @@ def find_good_layer(model, img_tensor):
     
     return best_layer
 
-
+# this combines the grad cam and the original image
 def show_grad_cam(img_pil, model, target_class=None, target_layer=None, 
                   use_relu=True, smooth_factor=1.0, alpha=0.5):
     img = np.array(img_pil)
@@ -178,40 +178,54 @@ def show_grad_cam(img_pil, model, target_class=None, target_layer=None,
                 if len(layers_to_try) >= 3:
                     break
     
-    for i, layer in enumerate(layers_to_try):
-        try:
-            heat_mapper = HeatMapper(model, target_layer=layer)
-            heat_map = heat_mapper(img_tensor, target_class=target_class, 
-                        use_relu=use_relu, smooth_factor=smooth_factor)
-            break
-        except Exception as e:
-            if i == len(layers_to_try) - 1:
-                raise ValueError(f"All layers failed for heatmap: {e}")
+    heat_mapper = HeatMapper(model, target_layer=target_layer)
+    heat_map = heat_mapper(img_tensor, target_class=target_class, 
+                use_relu=use_relu, smooth_factor=smooth_factor)
 
     heat_np = heat_map.detach().cpu().numpy()[0, 0]
     heat_np = cv2.resize(heat_np, (256, 256))
     
     if heat_np.max() - heat_np.min() > 1e-6:
+        # Normalize between 0 and 1
         heat_np = (heat_np - heat_np.min()) / (heat_np.max() - heat_np.min())
         
-        mean_val = np.mean(heat_np)
-        threshold = min(0.6, max(0.3, mean_val * 2.5))
-        
+        threshold = np.percentile(heat_np, 85)  # Keep top 15% activations to highlight imp regions
         heat_np[heat_np < threshold] = 0
+        
+        # Strengthen the signal
+        heat_np = np.power(heat_np, 1.5)
         
         if heat_np.max() > 0:
             heat_np = heat_np / heat_np.max()
         
-        heat_np = np.power(heat_np, 1.5)
+        # Clean up noise while preserving edges
+        heat_np = cv2.medianBlur(heat_np.astype(np.float32), 3)
+        
+        # Remove weak activations
+        heat_np[heat_np < 0.2] = 0
         
         if heat_np.max() > 0:
-            heat_uint8 = (heat_np * 255).astype(np.uint8)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-            heat_enhanced = clahe.apply(heat_uint8)
-            heat_np = heat_enhanced.astype(np.float32) / 255.0
+            heat_np = heat_np / heat_np.max()
     
+
     img_color = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    color_map = cv2.applyColorMap(np.uint8(255 * heat_np), cv2.COLORMAP_JET)
-    overlay = cv2.addWeighted(img_color, 1-alpha, color_map, alpha, 0)
+    
+    heatmap = np.uint8(255 * heat_np)
+    # Change colormap from HOT to JET for better color distribution
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    
+    # this adjusts color balance to reduce yellow appearance
+    b, g, r = cv2.split(heatmap)
+    r = cv2.convertScaleAbs(r, alpha=2.5, beta=0)    # Increases red  
+    g = cv2.convertScaleAbs(g, alpha=1.5, beta=0)    # Decreases green 
+    b = cv2.convertScaleAbs(b, alpha=0.9, beta=0)    # Increases blue
+    heatmap = cv2.merge([b, g, r])
+    
+ 
+    alpha = 0.55  
+    overlay = cv2.addWeighted(img_color, 1-alpha, heatmap, alpha, 0)
+    
+
+    overlay = cv2.convertScaleAbs(overlay, alpha=1.2, beta=10) 
     
     return img_color, overlay

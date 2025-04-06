@@ -10,7 +10,6 @@ import subprocess
 import threading
 from datetime import datetime, timedelta
 from functools import wraps
-
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS 
 import torch
@@ -20,7 +19,6 @@ import cv2
 from io import BytesIO
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
-
 from attention_model import SimpleAttentionCNN, SpatialAttention
 from grad_cam.grad_cam import HeatMapper, show_grad_cam, find_good_layer
 
@@ -105,8 +103,6 @@ def get_probability(img, model_type="current"):
     
     # Use dictionary lookup instead of conditionals to select model for better code clarity
     model_dict = {
-        "original": loaded_models["original"],
-        "finetuned": loaded_models["finetuned"],
         "current": attention_model
     }
     
@@ -121,6 +117,7 @@ def get_probability(img, model_type="current"):
         
     return pred_prob_percent
 
+# this the model loader
 def load_attention_model(model_path=None):
     # Simplify path resolution
     if not model_path or not os.path.exists(model_path):
@@ -142,27 +139,7 @@ def load_attention_model(model_path=None):
         logging.error(f"Error loading model from {model_path}: {e}")
         raise
 
-def load_both_models():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    if loaded_models["original"] is None:
-        original_path = os.path.join(base_dir, 'model', 'tb_chest_xray_attention_best.pt')
-        try:
-            loaded_models["original"] = load_attention_model(original_path)
-        except Exception as e:
-            logging.error(f"Error loading original model: {e}")
-    
-    if loaded_models["finetuned"] is None:
-        latest_model = find_latest_refined_model()
-        if latest_model:
-            finetuned_path = os.path.join(base_dir, 'finetuning', latest_model)
-            try:
-                loaded_models["finetuned"] = load_attention_model(finetuned_path)
-            except Exception as e:
-                logging.error(f"Error loading finetuned model: {e}")
-    
-    return loaded_models["original"] is not None, loaded_models["finetuned"] is not None
-
+# this creates the grad-cam overlay
 def create_overlay(map_2d, original_gray, size=256, colormap=cv2.COLORMAP_INFERNO, alpha=0.7):
     map_2d = np.asarray(map_2d, dtype=np.float32)
     map_resized = cv2.resize(map_2d, (size, size))
@@ -194,13 +171,12 @@ def create_overlay(map_2d, original_gray, size=256, colormap=cv2.COLORMAP_INFERN
     overlay = cv2.addWeighted(original_bgr, 1-alpha, heatmap, alpha, 0)
     return overlay
 
-# Simplified image processing function with common functionality extracted
 def process_base_image(file):
     # Process image file to PIL and numpy formats
     pil_img = Image.open(file).convert("RGB")
     pil_img_gray = pil_img.convert("L")
 
-    # Create base64 of original image
+    # Create base64 of original image for UI display
     buf = BytesIO()
     pil_img.save(buf, format="JPEG")
     original_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -224,7 +200,7 @@ def process_image(file):
     img_np = base_result['img_np']
     img_tensor = base_result['img_tensor']
     
-    # Get tuberculosis probability
+    # Get tuberculosis probability 0 means normal and 1 means TB
     pred_prob_percent = get_probability(img_tensor)
 
     # Generate attention map
@@ -258,7 +234,7 @@ def process_image(file):
             alpha=0.65
         )
     except Exception:
-        # Use attention overlay as fallback
+        # Use attention overlay as fallback incase of grad-cam fails
         grad_cam_overlay_bgr = attn_overlay_bgr
     
     # Convert Grad-CAM to base64
@@ -272,107 +248,7 @@ def process_image(file):
         'tb_probability': pred_prob_percent
     }
 
-def process_image_with_comparison(file):
-    pil_img = Image.open(file).convert("RGB")
-    pil_img_gray = pil_img.convert("L")
-
-    buf = BytesIO()
-    pil_img.save(buf, format="JPEG")
-    original_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-    img_np = np.array(pil_img_gray)
-    img_np = cv2.resize(img_np, (256, 256))
-    img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-    img_tensor = img_tensor / 255.0
-
-    original_loaded, finetuned_loaded = load_both_models()
-    
-    results = {
-        'original_image': original_base64,
-        'has_comparison': original_loaded and finetuned_loaded
-    }
-    
-    if original_loaded:
-        try:
-            original_prob = get_probability(img_tensor, "original")
-            
-            with torch.no_grad():
-                original_output, original_attn = loaded_models["original"](img_tensor)
-            
-            original_attn_np = original_attn[0].squeeze().cpu().numpy()
-            original_overlay = create_overlay(original_attn_np, img_np, size=256)
-            _, buffer = cv2.imencode('.jpg', original_overlay)
-            original_attn_base64 = base64.b64encode(buffer).decode("utf-8")
-            
-            try:
-                focus_layer = find_good_layer(loaded_models["original"], img_tensor)
-                _, original_gradcam = show_grad_cam(
-                    img_np, 
-                    loaded_models["original"], 
-                    target_layer=focus_layer,
-                    use_relu=True,
-                    smooth_factor=0.3,
-                    alpha=0.65
-                )
-            except Exception:
-                original_gradcam = original_overlay
-            
-            _, buffer = cv2.imencode('.jpg', original_gradcam)
-            original_gradcam_base64 = base64.b64encode(buffer).decode("utf-8")
-            
-            results.update({
-                'original_probability': original_prob,
-                'original_attention': original_attn_base64,
-                'original_gradcam': original_gradcam_base64
-            })
-        except Exception as e:
-            results['original_error'] = str(e)
-    
-    if finetuned_loaded:
-        try:
-            finetuned_prob = get_probability(img_tensor, "finetuned")
-            
-            with torch.no_grad():
-                finetuned_output, finetuned_attn = loaded_models["finetuned"](img_tensor)
-            
-            finetuned_attn_np = finetuned_attn[0].squeeze().cpu().numpy()
-            finetuned_overlay = create_overlay(finetuned_attn_np, img_np, size=256)
-            _, buffer = cv2.imencode('.jpg', finetuned_overlay)
-            finetuned_attn_base64 = base64.b64encode(buffer).decode("utf-8")
-            
-            try:
-                focus_layer = find_good_layer(loaded_models["finetuned"], img_tensor)
-                _, finetuned_gradcam = show_grad_cam(
-                    img_np, 
-                    loaded_models["finetuned"], 
-                    target_layer=focus_layer,
-                    use_relu=True,
-                    smooth_factor=0.3,
-                    alpha=0.65
-                )
-            except Exception:
-                finetuned_gradcam = finetuned_overlay
-            
-            _, buffer = cv2.imencode('.jpg', finetuned_gradcam)
-            finetuned_gradcam_base64 = base64.b64encode(buffer).decode("utf-8")
-            
-            results.update({
-                'finetuned_probability': finetuned_prob,
-                'finetuned_attention': finetuned_attn_base64,
-                'finetuned_gradcam': finetuned_gradcam_base64
-            })
-        except Exception as e:
-            results['finetuned_error'] = str(e)
-    
-    normal_results = process_image(file)
-    results.update({
-        'tb_probability': normal_results['tb_probability'],
-        'grad_cam_image': normal_results['grad_cam_image'],
-        'attention_image': normal_results['attention_image']
-    })
-    
-    return results
-
+# this is to save feedback to the feedback dir (its in backend/feedback)
 def save_feedback(image_data, mask_data, user_label):
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
     unique_id = f"{timestamp_str}_{uuid.uuid4().hex[:6]}"
@@ -444,7 +320,7 @@ def find_latest_refined_model():
         return newest_model
     except Exception as e:
         return None
-
+# this will be used to fine and display all refined models in the UI
 def find_all_refined_models():
     try:
         model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'finetuning')
@@ -490,6 +366,7 @@ def count_feedback_items():
     except Exception as e:
         return 0
 
+# this is the main route for the app
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -513,7 +390,7 @@ def register():
         'message': 'User registered successfully',
         'username': username
     }), 201
-
+# this is the login route for the app
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -545,7 +422,7 @@ def login():
         'role': user['role'],
         'expires': JWT_EXPIRATION
     })
-
+# this is the token verification route for the app
 @app.route('/api/auth/verify', methods=['GET'])
 @token_required
 def verify_token(current_user):
@@ -555,14 +432,13 @@ def verify_token(current_user):
         'username': current_user['username'],
         'role': current_user['role']
     })
-
+# this is the route for the home page of the app
 @app.route('/')
 def home():
     feedback_count = count_feedback_items()
     return render_template('index.html', 
                           feedback_count=feedback_count,
                           current_model="tb_chest_xray_attention_best.pt")
-
 @app.route('/api/predict', methods=['POST'])
 @token_required
 def api_predict(current_user):
@@ -574,17 +450,12 @@ def api_predict(current_user):
         return jsonify({'error': 'No selected file'}), 400
 
     try:
-        compare = request.args.get('compare', 'false').lower() == 'true'
-        
-        if compare:
-            result = process_image_with_comparison(file)
-        else:
-            result = process_image(file)
-            
+        result = process_image(file)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'Error processing image: {str(e)}'}), 500
 
+# this is the route for the feedback saving
 @app.route('/api/feedback', methods=['POST'])
 @token_required
 def api_feedback(current_user):
@@ -605,12 +476,13 @@ def api_feedback(current_user):
     except Exception as e:
         return jsonify({"error": f"Error saving feedback: {str(e)}"}), 500
 
+# this is to display the feedback count in the UI
 @app.route('/api/feedback_count', methods=['GET'])
 @token_required
 def api_feedback_count(current_user):
     count = count_feedback_items()
     return jsonify({"count": count})
-
+# this is to display the finetuning status in the UI
 @app.route('/api/finetuning_status', methods=['GET'])
 @token_required
 def check_finetuning_status(current_user):
@@ -624,7 +496,7 @@ def check_finetuning_status(current_user):
             finetuning_status["current_epoch"] = finetuning_status["total_epochs"]
     
     return jsonify(finetuning_status)
-
+# this is to run the finetuning process
 @app.route('/api/run_finetuning', methods=['POST'])
 @token_required
 def run_finetuning(current_user):
@@ -653,7 +525,7 @@ def run_finetuning(current_user):
     new_model_path = f"finetuning/tb_chest_xray_refined_{timestamp}.pt"
     
     os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'finetuning'), exist_ok=True)
-    
+    # this is all the cmd commands to run the finetuning process
     cmd = [
         sys.executable,
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'finetune.py'),
@@ -696,6 +568,7 @@ def run_finetuning(current_user):
             "message": f"Error: {str(e)}"
         })
 
+# this is to display the select in the frontend
 @app.route('/api/available_models', methods=['GET'])
 @token_required
 def get_available_models(current_user):
@@ -708,6 +581,7 @@ def get_available_models(current_user):
         "refined_models": refined_models
     })
 
+# this is to switchj models
 @app.route('/api/switch_model', methods=['POST'])
 @token_required
 def switch_model(current_user):
@@ -762,6 +636,7 @@ def switch_model(current_user):
             "message": f"Error: {str(e)}"
         })
 
+# this is to display the current model in the frontend
 @app.route('/api/current_model', methods=['GET'])
 @token_required
 def get_current_model(current_user):
@@ -771,18 +646,17 @@ def get_current_model(current_user):
 
 if __name__ == "__main__":
     admin_password = os.environ.get('ADMIN_PASSWORD', 'admin')
+    # admin users who can run finetuning 
     users['admin'] = {
         'username': 'admin',
         'password': generate_password_hash(admin_password),
         'role': 'admin'
     }
-    
+    # this is for regular users like docs
     users['user'] = {
         'username': 'user',
         'password': generate_password_hash('password'),
         'role': 'user'
     }
-    
-    load_both_models()
     
     app.run(host='0.0.0.0', port=8000)

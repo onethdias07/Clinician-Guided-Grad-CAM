@@ -26,20 +26,19 @@ function App() {
   const [annotationShapes, setAnnotationShapes] = useState([]);
   const [currentAnnotationShape, setCurrentAnnotationShape] = useState([]);
   const [isAnnotationToolVisible, setIsAnnotationToolVisible] = useState(false);
-  const [currentModel, setCurrentModel] = useState('tb_chest_xray_attention_best.pt');
   const [feedbackCount, setFeedbackCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [feedbackSubmissionSuccess, setFeedbackSubmissionSuccess] = useState(null);
   
-  // These are all the variables for model management
-  const [isRefiningModel, setIsRefiningModel] = useState(false);
-  const [modelRefinementProgress, setModelRefinementProgress] = useState(0);
-  const [modelRefinementStatus, setModelRefinementStatus] = useState('');
-  const [statusCheckInterval, setStatusCheckInterval] = useState(null);
-  
-  // These are all the variables for model selection
-  const [availableModels, setAvailableModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState('tb_chest_xray_attention_best.pt');
+  // Combine model refinement states into a single object
+  const [modelRefinement, setModelRefinement] = useState({
+    isRefining: false,
+    progress: 0,
+    status: '',
+    selectedModel: 'tb_chest_xray_attention_best.pt',
+    currentModel: 'tb_chest_xray_attention_best.pt',
+    availableModels: []
+  });
 
   // These are all the variables for canvas related stuff
   const displayCanvasRef = useRef(null);
@@ -162,16 +161,35 @@ function App() {
   }, [feedbackSubmissionSuccess]);
 
   useEffect(() => {
-    return () => {
-      if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
-      }
-    };
-  }, [statusCheckInterval]);
+    let intervalId;
+    if (modelRefinement.isRefining) {
+      intervalId = setInterval(async () => {
+        try {
+          const response = await axios.get('/api/finetuning_status');
+          setModelRefinement(prev => ({
+            ...prev,
+            progress: response.data.current_epoch / response.data.total_epochs * 100,
+            status: response.data.message,
+            isRefining: response.data.running
+          }));
+          if (!response.data.running) {
+            clearInterval(intervalId);
+            updateFeedbackCount();
+            fetchAvailableModels();
+          }
+        } catch (error) {
+          console.error('Status check failed:', error);
+        }
+      }, 5000);
+    }
+    return () => intervalId && clearInterval(intervalId);
+  }, [modelRefinement.isRefining]);
 
   const handleXrayImageUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    
+    console.log('Uploading file:', file.name, 'Type:', file.type, 'Size:', file.size);
     
     const validTypes = ['image/jpeg', 'image/png', 'image/bmp', 'image/tiff'];
     if (!validTypes.includes(file.type)) {
@@ -185,11 +203,14 @@ function App() {
     setIsLoading(true);
     
     try {
+      console.log('Sending request to /api/predict');
       const response = await axios.post('/api/predict', formData, {
         headers: {
           'Content-Type': 'multipart/form-data'
         }
       });
+      
+      console.log('Response received:', response.status);
       
       const { original_image, grad_cam_image, tb_probability } = response.data;
       
@@ -199,6 +220,8 @@ function App() {
       setTuberculosisDiagnosis(null);
       setFeedbackSubmissionSuccess(null);
     } catch (error) {
+      console.error('Error uploading image:', error);
+      console.error('Error details:', error.response ? error.response.data : 'No response data');
       alert('Error processing image. Please try a different file or try again later.');
     } finally {
       setIsLoading(false);
@@ -243,34 +266,6 @@ function App() {
     
     if (!newVisibility) {
       resetAnnotations();
-    }
-  };
-
-  const handleMouseDown = (e) => {
-    setIsDrawingAnnotation(true);
-    setCurrentAnnotationShape([]);
-    addAnnotationPoint(e);
-  };
-
-  const handleMouseMove = (e) => {
-    const rect = displayCanvasRef.current.getBoundingClientRect();
-    
-    if (!isDrawingAnnotation) return;
-    addAnnotationPoint(e);
-    redrawDisplayCanvas();
-  };
-
-  const handleMouseUp = () => {
-    if (isDrawingAnnotation) {
-      setIsDrawingAnnotation(false);
-      finalizeAnnotationShape();
-    }
-  };
-
-  const handleMouseLeave = () => {
-    if (isDrawingAnnotation) {
-      setIsDrawingAnnotation(false);
-      finalizeAnnotationShape();
     }
   };
 
@@ -428,7 +423,10 @@ function App() {
     try {
       const response = await axios.get('/api/current_model');
       if (response.data && response.data.model_name) {
-        setCurrentModel(response.data.model_name);
+        setModelRefinement(prev => ({
+          ...prev,
+          currentModel: response.data.model_name
+        }));
       }
     } catch (error) {
       console.error('Error fetching current model:', error);
@@ -446,76 +444,47 @@ function App() {
   
   const runModelRefinement = async () => {
     try {
-      setIsRefiningModel(true);
-      setModelRefinementProgress(0);
-      setModelRefinementStatus('Starting refinement process...');
-      
+      setModelRefinement(prev => ({
+        ...prev,
+        isRefining: true,
+        progress: 0,
+        status: 'Starting refinement process...'
+      }));
       const response = await axios.post('/api/run_finetuning');
-      
-      if (response.data && response.data.success) {
-        setModelRefinementStatus(response.data.message);
-        
-        if (statusCheckInterval) {
-          clearInterval(statusCheckInterval);
-        }
-        
-        const intervalId = setInterval(checkModelRefinementStatus, 5000);
-        setStatusCheckInterval(intervalId);
-      } else {
-        setModelRefinementStatus(`Error: ${response.data?.message || 'Unknown error'}`);
-        setIsRefiningModel(false);
+      if (!response.data.success) {
+        setModelRefinement(prev => ({
+          ...prev,
+          isRefining: false,
+          status: response.data.message
+        }));
       }
     } catch (error) {
-      setModelRefinementStatus(`Error starting refinement: ${error.message}`);
-      setIsRefiningModel(false);
+      setModelRefinement(prev => ({
+        ...prev,
+        isRefining: false,
+        status: `Error: ${error.message}`
+      }));
     }
   };
-  
+
   const switchModel = async () => {
     try {
-      setModelRefinementStatus('Switching model...');
-      
+      setModelRefinement(prev => ({ ...prev, status: 'Switching model...' }));
       const response = await axios.post('/api/switch_model', {
-        model_name: selectedModel
+        model_name: modelRefinement.selectedModel
       });
-      
-      if (response.data && response.data.success) {
-        setModelRefinementStatus(response.data.message);
-        setCurrentModel(response.data.model_name);
-      } else {
-        setModelRefinementStatus(`Error: ${response.data?.message || 'Unknown error'}`);
+      if (response.data.success) {
+        setModelRefinement(prev => ({
+          ...prev,
+          currentModel: response.data.model_name,
+          status: response.data.message
+        }));
       }
     } catch (error) {
-      setModelRefinementStatus(`Error switching model: ${error.message}`);
-    }
-  };
-  
-  const checkModelRefinementStatus = async () => {
-    try {
-      const response = await axios.get('/api/finetuning_status');
-      
-      setModelRefinementStatus(response.data.message);
-      
-      const { current_epoch, total_epochs, running } = response.data;
-      
-      if (current_epoch && total_epochs) {
-        const progress = (current_epoch / total_epochs) * 100;
-        setModelRefinementProgress(progress);
-      }
-      
-      if (!running) {
-        setIsRefiningModel(false);
-        setModelRefinementProgress(100);
-        
-        if (statusCheckInterval) {
-          clearInterval(statusCheckInterval);
-          setStatusCheckInterval(null);
-        }
-        
-        updateFeedbackCount();
-      }
-    } catch (error) {
-      setModelRefinementStatus('Error checking status');
+      setModelRefinement(prev => ({
+        ...prev,
+        status: `Error switching model: ${error.message}`
+      }));
     }
   };
 
@@ -529,7 +498,10 @@ function App() {
           ...(response.data.refined_models || [])
         ];
         
-        setAvailableModels(models);
+        setModelRefinement(prev => ({
+          ...prev,
+          availableModels: models
+        }));
       }
     } catch (error) {
       console.error('Error fetching available models:', error);
@@ -537,7 +509,7 @@ function App() {
   };
 
   const handleModelSelectionChange = (e) => {
-    setSelectedModel(e.target.value);
+    setModelRefinement(prev => ({ ...prev, selectedModel: e.target.value }));
   };
 
   const formatProbabilityDisplay = (prob) => {
@@ -557,6 +529,31 @@ function App() {
       class: numProb > 75 ? 'high-probability' : 
              numProb > 40 ? 'medium-probability' : 'low-probability'
     };
+  };
+
+  const handleCanvas = {
+    onMouseDown: (e) => {
+      setIsDrawingAnnotation(true);
+      setCurrentAnnotationShape([]);
+      addAnnotationPoint(e);
+    },
+    onMouseMove: (e) => {
+      if (!isDrawingAnnotation) return;
+      addAnnotationPoint(e);
+      redrawDisplayCanvas();
+    },
+    onMouseUp: () => {
+      if (isDrawingAnnotation) {
+        setIsDrawingAnnotation(false);
+        finalizeAnnotationShape();
+      }
+    },
+    onMouseLeave: () => {
+      if (isDrawingAnnotation) {
+        setIsDrawingAnnotation(false);
+        finalizeAnnotationShape();
+      }
+    }
   };
 
   return (
@@ -683,10 +680,7 @@ function App() {
                           ref={displayCanvasRef}
                           id="displayCanvas"
                           style={{ display: isAnnotationToolVisible ? 'block' : 'none' }}
-                          onMouseDown={handleMouseDown}
-                          onMouseMove={handleMouseMove}
-                          onMouseUp={handleMouseUp}
-                          onMouseLeave={handleMouseLeave}
+                          {...handleCanvas}
                         ></canvas>
                         <canvas 
                           ref={maskCanvasRef}
@@ -770,7 +764,7 @@ function App() {
             <div className="model-info">
               <div className="model-info-item">
                 <div className="model-info-label">Current Model</div>
-                <div className="model-info-value">{currentModel}</div>
+                <div className="model-info-value">{modelRefinement.currentModel}</div>
               </div>
               <div className="model-info-item">
                 <div className="model-info-label">Annotations Collected</div>
@@ -782,7 +776,7 @@ function App() {
               <button 
                 className="btn-primary" 
                 onClick={runModelRefinement} 
-                disabled={isRefiningModel || feedbackCount === 0}
+                disabled={modelRefinement.isRefining || feedbackCount === 0}
                 title={feedbackCount === 0 ? "Need feedback data to refine model" : ""}
               >
                 Run Offline Refinement
@@ -790,12 +784,12 @@ function App() {
               
               <div className="model-selector">
                 <select 
-                  value={selectedModel}
+                  value={modelRefinement.selectedModel}
                   onChange={handleModelSelectionChange}
-                  disabled={isRefiningModel || availableModels.length === 0}
+                  disabled={modelRefinement.isRefining || modelRefinement.availableModels.length === 0}
                   className="model-dropdown"
                 >
-                  {availableModels.map((model, index) => (
+                  {modelRefinement.availableModels.map((model, index) => (
                     <option key={index} value={model}>
                       {model === 'tb_chest_xray_attention_best.pt' ? 'Default Model' : model}
                     </option>
@@ -805,29 +799,29 @@ function App() {
                 <button 
                   className="btn-secondary" 
                   onClick={switchModel}
-                  disabled={isRefiningModel || selectedModel === currentModel}
-                  title={selectedModel === currentModel ? "Already using this model" : ""}
+                  disabled={modelRefinement.isRefining || modelRefinement.selectedModel === modelRefinement.currentModel}
+                  title={modelRefinement.selectedModel === modelRefinement.currentModel ? "Already using this model" : ""}
                 >
                   Switch Model
                 </button>
               </div>
             </div>
             
-            {(isRefiningModel || modelRefinementStatus) && (
+            {(modelRefinement.isRefining || modelRefinement.status) && (
               <div className="refinement-status">
-                {isRefiningModel && (
+                {modelRefinement.isRefining && (
                   <div className="progress-container">
                     <div className="progress-label">Refinement progress:</div>
                     <div className="progress-bar-container">
                       <div 
                         className="progress-bar" 
-                        style={{ width: `${modelRefinementProgress}%` }}
+                        style={{ width: `${modelRefinement.progress}%` }}
                       ></div>
                     </div>
-                    <div className="progress-text">{Math.round(modelRefinementProgress)}%</div>
+                    <div className="progress-text">{Math.round(modelRefinement.progress)}%</div>
                   </div>
                 )}
-                <div className="status-message">{modelRefinementStatus}</div>
+                <div className="status-message">{modelRefinement.status}</div>
               </div>
             )}
             

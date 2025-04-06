@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
+// This is the main authentication component that handles user login flow
 const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
+  // state management for form inputs and UI states
   const [formData, setFormData] = useState({
     username: '',
     password: ''
@@ -9,6 +11,7 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
   const [loginError, setLoginError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   
+  // thjis is the handler
   const handleInputChange = (e) => {
     const { id, value } = e.target;
     setFormData(prev => ({
@@ -17,31 +20,37 @@ const LoginForm = ({ onLoginSuccess, onSwitchToRegister }) => {
     }));
   };
   
+  // main code logic -> handles form submission and API interaction
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
     const { username, password } = formData;
     
-    setLoginError('');
-    
+    // Quick validation check before API call to make sure fields are filled
     if (!username || !password) {
       setLoginError('Please enter both username and password');
       return;
     }
     
+    // this will start login process and clear any previous errors
     setIsAuthenticating(true);
+    setLoginError('');
     
     try {
+      // this will attempt authentication with backend
       const response = await axios.post('/api/auth/login', { username, password });
-      if (response.data && response.data.token) {
+      if (response.data?.token) {
         onLoginSuccess(response.data);
       }
-    } catch (err) {
-      setLoginError(err.response?.data?.message || 'Login failed');
+    } catch (error) {
+      // Handle authentication failures with user-friendly messages
+      setLoginError(error.response?.data?.message || 
+        error.response?.status === 401 ? 'Invalid username or password' : 'Login failed');
     } finally {
       setIsAuthenticating(false);
     }
   };
   
+  // Main render 
   return (
     <div className="auth-form-container">
       <h2 className="auth-title">Welcome Back</h2>

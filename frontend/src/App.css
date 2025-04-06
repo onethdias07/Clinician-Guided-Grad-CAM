@@ -23,12 +23,11 @@ body {
   font-family: 'Inter', 'Roboto', 'Segoe UI', sans-serif;
   padding: 0;
   margin: 0;
-  background-color: #f8fafc; /* Slightly adjusted background for a more modern look */
+  background-color: #f8fafc;
   color: var(--black);
   line-height: 1.6;
 }
 
-/* Main layout */
 .App {
   display: flex;
   flex-direction: column;
@@ -82,7 +81,6 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--primary);
 }
 
-/* Cards */
 .card {
   background-color: var(--white);
   border-radius: var(--border-radius);
@@ -114,7 +112,6 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 700;
 }
 
-/* Image containers */
 .image-section {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -167,7 +164,6 @@ h1, h2, h3, h4, h5, h6 {
   position: relative;
 }
 
-/* File upload */
 .file-upload {
   position: relative;
   display: flex;
@@ -225,7 +221,6 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--gray-dark);
 }
 
-/* Results */
 .result {
   text-align: center;
   padding: 18px 0;
@@ -245,7 +240,7 @@ h1, h2, h3, h4, h5, h6 {
 .probability-value {
   font-size: 2.5rem;
   font-weight: 700;
-  color: var(--secondary);
+  color: var (--secondary);
   padding: 0 10px;
   text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
   transition: var(--transition);
@@ -257,7 +252,6 @@ h1, h2, h3, h4, h5, h6 {
   margin-right: 8px;
 }
 
-/* Drawing tools */
 .drawing-tools {
   display: flex;
   flex-wrap: wrap;
@@ -275,7 +269,6 @@ h1, h2, h3, h4, h5, h6 {
   margin: 20px 0;
 }
 
-/* Label selection - updated styling */
 .label-section {
   padding: 25px;
   background-color: rgba(26, 188, 156, 0.05);
@@ -323,7 +316,6 @@ h1, h2, h3, h4, h5, h6 {
   accent-color: var(--accent);
 }
 
-/* Admin section */
 .admin-section {
   display: none;
 }
@@ -355,7 +347,6 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--primary);
 }
 
-/* Buttons */
 button {
   padding: 12px 22px;
   border-radius: 50px;
@@ -450,7 +441,6 @@ button:disabled {
   transform: translateY(0);
 }
 
-/* Canvas styling */
 #displayCanvas {
   position: absolute;
   top: 0;
@@ -461,7 +451,7 @@ button:disabled {
   border-radius: 8px;
   cursor: crosshair;
   z-index: 10;
-  pointer-events: auto; /* Ensure it receives mouse events */
+  pointer-events: auto;
   box-shadow: inset 0 0 10px rgba(52, 152, 219, 0.1);
 }
 
@@ -469,7 +459,6 @@ button:disabled {
   display: none;
 }
 
-/* Progress bar */
 .progress-container {
   margin: 25px 0;
   padding: 15px;
@@ -575,7 +564,6 @@ button:disabled {
   100% { box-shadow: 0 0 0 rgba(39, 174, 96, 0); }
 }
 
-/* Loading spinner */
 .spinner-overlay {
   position: fixed;
   top: 0;
@@ -673,7 +661,6 @@ button:disabled {
   margin-top: 8px;
 }
 
-/* Responsive improvements */
 @media (max-width: 576px) {
   .card {
     padding: 20px;
@@ -709,7 +696,6 @@ button:disabled {
   }
 }
 
-/* Highlight effect for new annotations */
 @keyframes pulse-border {
   0% { border-color: rgba(26, 188, 156, 0.5); }
   50% { border-color: rgba(26, 188, 156, 1); }
@@ -720,9 +706,6 @@ button:disabled {
   animation: pulse-border 2s infinite;
 }
 
-/* Add these CSS rules to your existing App.css file */
-
-/* Model Refinement Section */
 .model-info {
   display: flex;
   flex-wrap: wrap;
@@ -812,7 +795,6 @@ button:disabled {
   margin-bottom: 8px;
 }
 
-/* Debug Panel */
 .debug-panel {
   display: none;
 }
@@ -847,7 +829,6 @@ button:disabled {
   border-bottom: 1px solid #eee;
 }
 
-/* Model dropdown */
 .model-selector {
   display: flex;
   gap: 10px;
@@ -864,7 +845,6 @@ button:disabled {
   font-size: 0.9rem;
 }
 
-/* Make the model actions layout better for smaller screens */
 @media (max-width: 768px) {
   .model-actions {
     flex-direction: column;
@@ -881,10 +861,7 @@ button:disabled {
   }
 }
 
-
-/* Auth Form Styling */
 .auth-form-container {
-
   max-width: 400px;
   margin: 55px auto 0;
   padding: 2rem;
