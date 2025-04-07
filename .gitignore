@@ -8,9 +8,7 @@
 
 # Feedback and model data
 **/feedback/
-**/finetuning/
 !feedback/.gitkeep
-!finetuning/.gitkeep
 
 # Python
 __pycache__/
@@ -36,13 +34,11 @@ build/
 .jupyter/
 
 # PyTorch/ML specific
-*.pt
 *.pth
 *.h5
 *.onnx
 *.bin
 *.pb
-!model/*.pt
 runs/
 checkpoints/
 tb_logs/
